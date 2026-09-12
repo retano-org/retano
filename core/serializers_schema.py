@@ -133,9 +133,8 @@ class DashboardRFMSegmentsSerializer(serializers.Serializer):
 
 class DashboardResponseSerializer(serializers.Serializer):
     """
-    GET /api/v1/dashboard/ — full response shape. Cached server-side for
-    60 seconds per tenant; a cached response is byte-for-byte identical
-    to a freshly computed one, so this schema applies either way.
+    GET /api/v1/dashboard/ — full response shape. Tenant-scoped snapshots
+    are served immediately and refreshed in the background when stale.
     """
 
     campaigns = DashboardCampaignCountsSerializer()

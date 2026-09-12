@@ -45,6 +45,7 @@ from core.models import (
 )
 from core.services.storage import delete_from_storage, download_to_tempfile
 from core.utils.date_parser import FlexibleDateParser
+from core.utils.analytics_cache import schedule_analytics_refresh
 from core.utils.excel_mapper import (
     CouponExcelMapper,
     CustomerExcelMapper,
@@ -331,6 +332,7 @@ def process_customers_upload(self, job_id: str):
             "{rows_saved} رکورد مشتریان با موفقیت در دیتابیس ذخیره شد.",
         )
         succeeded = True
+        schedule_analytics_refresh(tenant.id)
 
     except Exception as e:
         _mark_failed(
@@ -541,6 +543,7 @@ def process_products_upload(self, job_id: str):
             "{rows_saved} رکورد محصولات با موفقیت در دیتابیس ذخیره شد.",
         )
         succeeded = True
+        schedule_analytics_refresh(tenant.id)
 
     except Exception as e:
         _mark_failed(

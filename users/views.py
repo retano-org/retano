@@ -4,7 +4,6 @@ from django.contrib.auth import get_user_model
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -13,6 +12,7 @@ from rest_framework_simplejwt.views import TokenRefreshView as BaseTokenRefreshV
 from core.exceptions import OTPError
 from core.schema import OTP_REQUEST_SCHEMA, OTP_VERIFY_SCHEMA, REGISTER_SCHEMA, LOGOUT_SCHEMA, PROFILE_SCHEMA, ACCOUNT_STATUS_SCHEMA, TOKEN_REFRESH_SCHEMA
 from .auth.otp import OTPService
+from .throttles import OTPPhoneScopedRateThrottle
 from .serializers import (
     LogoutSerializer,
     OTPRequestSerializer,
@@ -25,7 +25,7 @@ User = get_user_model()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Authentication 
+# Authentication
 # ─────────────────────────────────────────────────────────────────────────────
 
 @OTP_REQUEST_SCHEMA
@@ -33,7 +33,7 @@ class OTPRequestView(APIView):
     """POST /api/v1/auth/otp/request/"""
 
     permission_classes = [permissions.AllowAny]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [OTPPhoneScopedRateThrottle]
     throttle_scope = "otp_request"
 
     def post(self, request):
@@ -53,6 +53,7 @@ class OTPRequestView(APIView):
 
         return Response(data, status=status.HTTP_200_OK)
 
+
 @OTP_VERIFY_SCHEMA
 class OTPVerifyView(APIView):
     """
@@ -65,6 +66,8 @@ class OTPVerifyView(APIView):
     """
 
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [OTPPhoneScopedRateThrottle]
+    throttle_scope = "otp_verify"
 
     def post(self, request):
         serializer = OTPVerifySerializer(data=request.data)
@@ -136,7 +139,7 @@ class LogoutView(APIView):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Profile 
+# Profile
 # ─────────────────────────────────────────────────────────────────────────────
 
 @PROFILE_SCHEMA
@@ -153,7 +156,7 @@ class ProfileView(generics.RetrieveUpdateAPIView):
         return user
 
 
-@ACCOUNT_STATUS_SCHEMA 
+@ACCOUNT_STATUS_SCHEMA
 class AccountStatusView(APIView):
     """
     GET /api/v1/account/status/

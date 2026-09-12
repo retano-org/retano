@@ -24,13 +24,19 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from django.conf import settings
 from django.db import connection
 from core.schema import TRENDS_REPORT_SCHEMA, SALES_RANGE_REPORT_SCHEMA, SEGMENTS_REPORT_SCHEMA, ACTIVE_USERS_REPORT_SCHEMA, RETENTION_REPORT_SCHEMA
-from core.utils.jalali import last_n_jalali_years, current_jalali_year
+from core.utils.jalali import last_n_jalali_years
 from core.utils.analytics import (
     get_yearly_trends,
     get_yearly_trends_for_month,
     get_yearly_retention,
+)
+from core.utils.analytics_cache import (
+    get_cached_payload,
+    schedule_analytics_refresh,
+    set_cached_payload,
 )
 
 
@@ -47,6 +53,27 @@ def _get_tenant_id(request):
             {"detail": "Tenant record not found for this user."},
             status=status.HTTP_403_FORBIDDEN,
         )
+
+
+def _cached_report_response(request, tenant_id: int, report: str):
+    if getattr(request, "_analytics_force_refresh", False):
+        return None
+
+    payload, is_stale = get_cached_payload(
+        tenant_id,
+        report,
+        fresh_seconds=settings.ANALYTICS_REPORT_FRESH_SECONDS,
+    )
+    if payload is None:
+        return None
+    if is_stale:
+        schedule_analytics_refresh(tenant_id)
+    return Response(payload, status=status.HTTP_200_OK)
+
+
+def _report_response(tenant_id: int, report: str, payload: dict):
+    set_cached_payload(tenant_id, report, payload)
+    return Response(payload, status=status.HTTP_200_OK)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -135,6 +162,11 @@ class TrendsReportView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        cache_name = f"trends:{granularity}"
+        cached = _cached_report_response(request, tenant_id, cache_name)
+        if cached is not None:
+            return cached
+
         if granularity == "year":
             years = last_n_jalali_years(4)
             trends = get_yearly_trends(tenant_id, years=years)
@@ -142,9 +174,10 @@ class TrendsReportView(APIView):
                 {"jalali_year": y, **trends[y]}
                 for y in years
             ]
-            return Response(
+            return _report_response(
+                tenant_id,
+                cache_name,
                 {"granularity": "year", "data": data},
-                status=status.HTTP_200_OK,
             )
 
         # granularity == "month"
@@ -161,9 +194,10 @@ class TrendsReportView(APIView):
                 **point,
             })
 
-        return Response(
+        return _report_response(
+            tenant_id,
+            cache_name,
             {"granularity": "month", "data": data},
-            status=status.HTTP_200_OK,
         )
 
 
@@ -235,6 +269,11 @@ class SalesRangeReportView(APIView):
         if error:
             return error
 
+        cache_name = "sales-ranges"
+        cached = _cached_report_response(request, tenant_id, cache_name)
+        if cached is not None:
+            return cached
+
         with connection.cursor() as cursor:
             cursor.execute(self._QUERY, [tenant_id])
             row = cursor.fetchone()
@@ -246,7 +285,11 @@ class SalesRangeReportView(APIView):
             for (key, label, _, _), count in zip(SALES_RANGE_BUCKETS, counts)
         ]
 
-        return Response({"buckets": buckets}, status=status.HTTP_200_OK)
+        return _report_response(
+            tenant_id,
+            cache_name,
+            {"buckets": buckets},
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -295,6 +338,11 @@ class SegmentsReportView(APIView):
         if error:
             return error
 
+        cache_name = "segments"
+        cached = _cached_report_response(request, tenant_id, cache_name)
+        if cached is not None:
+            return cached
+
         with connection.cursor() as cursor:
             cursor.execute(self._QUERY, [tenant_id])
             rows = cursor.fetchall()
@@ -315,9 +363,10 @@ class SegmentsReportView(APIView):
                 "percentage": percentage,
             })
 
-        return Response(
+        return _report_response(
+            tenant_id,
+            cache_name,
             {"total_users": total_users, "segments": segments},
-            status=status.HTTP_200_OK,
         )
 
 
@@ -325,7 +374,7 @@ class SegmentsReportView(APIView):
 # درصد کاربران فعال
 # ─────────────────────────────────────────────────────────────────────────────
 
-@ACTIVE_USERS_REPORT_SCHEMA 
+@ACTIVE_USERS_REPORT_SCHEMA
 class ActiveUsersReportView(APIView):
     """
     GET /api/v1/reports/active-users/
@@ -370,6 +419,11 @@ class ActiveUsersReportView(APIView):
         if error:
             return error
 
+        cache_name = "active-users"
+        cached = _cached_report_response(request, tenant_id, cache_name)
+        if cached is not None:
+            return cached
+
         with connection.cursor() as cursor:
             cursor.execute(self._QUERY, [tenant_id])
             row = cursor.fetchone()
@@ -381,7 +435,9 @@ class ActiveUsersReportView(APIView):
         active_percent = round(active_count / total * 100, 1) if total > 0 else 0.0
         inactive_percent = round(100.0 - active_percent, 1) if total > 0 else 0.0
 
-        return Response(
+        return _report_response(
+            tenant_id,
+            cache_name,
             {
                 "total_users": total,
                 "active_count": active_count,
@@ -389,7 +445,6 @@ class ActiveUsersReportView(APIView):
                 "active_percent": active_percent,
                 "inactive_percent": inactive_percent,
             },
-            status=status.HTTP_200_OK,
         )
 
 
@@ -397,7 +452,7 @@ class ActiveUsersReportView(APIView):
 # نرخ نگهداری / نرخ ریزش  (yearly retention / churn — shared logic)
 # ─────────────────────────────────────────────────────────────────────────────
 
-@RETENTION_REPORT_SCHEMA 
+@RETENTION_REPORT_SCHEMA
 class RetentionReportView(APIView):
     """
     GET /api/v1/reports/retention/
@@ -433,5 +488,14 @@ class RetentionReportView(APIView):
         if error:
             return error
 
+        cache_name = "retention"
+        cached = _cached_report_response(request, tenant_id, cache_name)
+        if cached is not None:
+            return cached
+
         years_data = get_yearly_retention(tenant_id)
-        return Response({"years": years_data}, status=status.HTTP_200_OK)
+        return _report_response(
+            tenant_id,
+            cache_name,
+            {"years": years_data},
+        )

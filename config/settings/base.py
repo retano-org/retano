@@ -215,6 +215,7 @@ REST_FRAMEWORK = {
         "anon": "100/hour",
         "user": "1000/hour",
         "otp_request": "5/hour",  # used on the OTP endpoint specifically
+        "otp_verify": "100/hour",  # per phone; avoids shared-IP lockouts
         "free_consult_create": "5/hour",
     },
 }
@@ -320,6 +321,23 @@ SMSIR_API_KEY = os.environ.get("SMSIR_API_KEY", "")
 SMSIR_OTP_TEMPLATE_ID = os.environ.get("SMSIR_OTP_TEMPLATE_ID", "")
 
 OTP_PROVIDER = os.environ.get("OTP_PROVIDER", "sms_ir")
+
+
+# Analytics responses remain available as stale snapshots for one day. Once a
+# snapshot is older than its shorter freshness window, it is returned
+# immediately and refreshed by Celery instead of making page navigation wait.
+ANALYTICS_CACHE_TTL_SECONDS = int(
+    os.environ.get("ANALYTICS_CACHE_TTL_SECONDS", 24 * 60 * 60)
+)
+ANALYTICS_REPORT_FRESH_SECONDS = int(
+    os.environ.get("ANALYTICS_REPORT_FRESH_SECONDS", 15 * 60)
+)
+DASHBOARD_CACHE_FRESH_SECONDS = int(
+    os.environ.get("DASHBOARD_CACHE_FRESH_SECONDS", 15 * 60)
+)
+ANALYTICS_REFRESH_LOCK_SECONDS = int(
+    os.environ.get("ANALYTICS_REFRESH_LOCK_SECONDS", 5 * 60)
+)
 
 
 # ── Celery ───────────────────────────────────────────────────────────────────

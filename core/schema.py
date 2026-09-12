@@ -991,8 +991,8 @@ DASHBOARD_SCHEMA = extend_schema(
         "notification unread-badge count (support_unread_count — now "
         "backed by the notifications app; see that field's own "
         "description).\n\n"
-        "Cached server-side per tenant for 60 seconds — a cache hit "
-        "returns byte-for-byte the same shape as a fresh computation."
+        "Cached server-side per tenant. A stale snapshot is returned "
+        "immediately while Celery refreshes it in the background."
     ),
     responses={
         200: DashboardResponseSerializer,

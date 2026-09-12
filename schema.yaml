@@ -383,7 +383,7 @@ paths:
       description: |-
         Everything the dashboard page needs in one request: campaign counts, active/inactive customer counts, current-month sales, top 4 products by revenue, yearly retention/churn (see the monthly_trends field's own description for an important naming caveat), RFM segment distribution, SMS balance, and the notification unread-badge count (support_unread_count — now backed by the notifications app; see that field's own description).
 
-        Cached server-side per tenant for 60 seconds — a cache hit returns byte-for-byte the same shape as a fresh computation.
+        Cached server-side per tenant. A stale snapshot is returned immediately while Celery refreshes it in the background.
       summary: Single aggregated payload for the دشبورد page
       tags:
       - Dashboard
@@ -2889,8 +2889,8 @@ components:
       type: object
       description: |-
         GET /api/v1/dashboard/ — full response shape. Cached server-side for
-        60 seconds per tenant; a cached response is byte-for-byte identical
-        to a freshly computed one, so this schema applies either way.
+        Tenant-scoped snapshots are served immediately and refreshed in the
+        background when stale.
       properties:
         campaigns:
           $ref: '#/components/schemas/DashboardCampaignCounts'

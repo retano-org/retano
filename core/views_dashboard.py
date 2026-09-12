@@ -18,12 +18,13 @@ Charts/cards on this page and where their data comes from:
                                   the old tickets.Thread.unread_count() —
                                   the tickets app no longer exists)
 
-Cached per-tenant for 60 seconds.
+Cached per tenant. Stale snapshots are returned immediately and refreshed by
+Celery so navigation never waits for a repeated aggregation.
 """
 
 from datetime import date
 
-from django.core.cache import cache
+from django.conf import settings
 from django.db import connection
 
 from rest_framework import permissions, status
@@ -32,15 +33,19 @@ from rest_framework.views import APIView
 from core.schema import DASHBOARD_SCHEMA
 from core.models import Campaign
 from core.utils.jalali import (
-    current_jalali_year,
     jalali_month_to_gregorian_range,
 )
 from core.utils.analytics import get_yearly_retention
+from core.utils.analytics_cache import (
+    get_cached_payload,
+    schedule_analytics_refresh,
+    set_cached_payload,
+)
 from notifications.models import Notification
 
 import jdatetime
 
-DASHBOARD_CACHE_TTL = 60
+DASHBOARD_CACHE_NAME = "dashboard"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -60,7 +65,8 @@ class DashboardView(APIView):
     GET /api/v1/dashboard/
 
     Returns all data needed to render the دشبورد page in one request.
-    Response is cached per tenant for 60 seconds.
+    Response is cached per tenant. Stale data is served while Celery refreshes
+    the snapshot in the background.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -76,11 +82,17 @@ class DashboardView(APIView):
             )
 
         tenant_id = tenant.id
-        cache_key = f"dashboard:tenant:{tenant_id}"
-
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return Response(cached, status=status.HTTP_200_OK)
+        force_refresh = getattr(request, "_analytics_force_refresh", False)
+        if not force_refresh:
+            cached, is_stale = get_cached_payload(
+                tenant_id,
+                DASHBOARD_CACHE_NAME,
+                fresh_seconds=settings.DASHBOARD_CACHE_FRESH_SECONDS,
+            )
+            if cached is not None:
+                if is_stale:
+                    schedule_analytics_refresh(tenant_id)
+                return Response(cached, status=status.HTTP_200_OK)
 
         data = {}
 
@@ -250,5 +262,5 @@ class DashboardView(APIView):
         ).count()
 
         # ── Cache and return ──────────────────────────────────────────────
-        cache.set(cache_key, data, DASHBOARD_CACHE_TTL)
+        set_cached_payload(tenant_id, DASHBOARD_CACHE_NAME, data)
         return Response(data, status=status.HTTP_200_OK)
