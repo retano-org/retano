@@ -1012,10 +1012,9 @@ OTP_REQUEST_SCHEMA = extend_schema(
     description=(
         "No authentication required. Sends a 4-digit code to the given "
         "phone number via the configured SMS provider (sms.ir by "
-        "default; see OTP_PROVIDER). Rate-limited two ways: a per-phone "
-        "resend cooldown (independent of DRF's own throttle_scope= "
-        "'otp_request' 5/hour limit) and a max-attempts counter enforced "
-        "at verify time.\n\n"
+        "default; see OTP_PROVIDER). Requests are limited to 5 per "
+        "120 seconds for each phone number, with no resend cooldown. "
+        "A max-attempts counter is enforced at verify time.\n\n"
         "debug_code is included in the response ONLY when the server is "
         "running with OTP_FAKE_MODE=True (local development only) — "
         "never rely on its presence."

@@ -12,7 +12,7 @@ from rest_framework_simplejwt.views import TokenRefreshView as BaseTokenRefreshV
 from core.exceptions import OTPError
 from core.schema import OTP_REQUEST_SCHEMA, OTP_VERIFY_SCHEMA, REGISTER_SCHEMA, LOGOUT_SCHEMA, PROFILE_SCHEMA, ACCOUNT_STATUS_SCHEMA, TOKEN_REFRESH_SCHEMA
 from .auth.otp import OTPService
-from .throttles import OTPPhoneScopedRateThrottle
+from .throttles import OTPPhoneScopedRateThrottle, OTPRequestPhoneRateThrottle
 from .serializers import (
     LogoutSerializer,
     OTPRequestSerializer,
@@ -33,7 +33,7 @@ class OTPRequestView(APIView):
     """POST /api/v1/auth/otp/request/"""
 
     permission_classes = [permissions.AllowAny]
-    throttle_classes = [OTPPhoneScopedRateThrottle]
+    throttle_classes = [OTPRequestPhoneRateThrottle]
     throttle_scope = "otp_request"
 
     def post(self, request):

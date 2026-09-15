@@ -1214,7 +1214,7 @@ paths:
     post:
       operationId: auth_otp_request_create
       description: |-
-        No authentication required. Sends a 4-digit code to the given phone number via the configured SMS provider (sms.ir by default; see OTP_PROVIDER). Rate-limited two ways: a per-phone resend cooldown (independent of DRF's own throttle_scope= 'otp_request' 5/hour limit) and a max-attempts counter enforced at verify time.
+        No authentication required. Sends a 4-digit code to the given phone number via the configured SMS provider (sms.ir by default; see OTP_PROVIDER). Requests are limited to 5 per 120 seconds for each phone number, with no resend cooldown. A max-attempts counter is enforced at verify time.
 
         debug_code is included in the response ONLY when the server is running with OTP_FAKE_MODE=True (local development only) — never rely on its presence.
       summary: Request an OTP code
@@ -3151,8 +3151,7 @@ components:
           description: How long the OTP code remains valid.
         resend_in_seconds:
           type: integer
-          description: Client must wait this long before requesting another OTP for
-            this number.
+          description: No resend cooldown is enforced; this value is always 0.
         debug_code:
           type: string
           pattern: ^[0-9]{4}$

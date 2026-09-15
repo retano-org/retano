@@ -25,3 +25,16 @@ class OTPPhoneScopedRateThrottle(ScopedRateThrottle):
             "scope": self.scope,
             "ident": phone_number,
         }
+
+
+class OTPRequestPhoneRateThrottle(OTPPhoneScopedRateThrottle):
+    """Limit OTP requests per phone in an exact 120-second window."""
+
+    window_seconds = 120
+
+    def parse_rate(self, rate):
+        if rate is None:
+            return None, None
+
+        num_requests, _period = rate.split("/", 1)
+        return int(num_requests), self.window_seconds

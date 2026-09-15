@@ -214,7 +214,8 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": "100/hour",
         "user": "1000/hour",
-        "otp_request": "5/hour",  # used on the OTP endpoint specifically
+        # OTPRequestPhoneRateThrottle parses this as an exact 120-second window.
+        "otp_request": "5/120seconds",
         "otp_verify": "100/hour",  # per phone; avoids shared-IP lockouts
         "free_consult_create": "5/hour",
     },

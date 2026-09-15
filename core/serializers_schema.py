@@ -545,7 +545,7 @@ class OTPRequestResponseSerializer(serializers.Serializer):
     phone_number = serializers.CharField(help_text="Normalized E.164 form, e.g. +989121234567.")
     ttl_seconds = serializers.IntegerField(help_text="How long the OTP code remains valid.")
     resend_in_seconds = serializers.IntegerField(
-        help_text="Client must wait this long before requesting another OTP for this number."
+        help_text="No resend cooldown is enforced; this value is always 0."
     )
     debug_code = serializers.RegexField(
         regex=r"^[0-9]{4}$",

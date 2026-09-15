@@ -6,22 +6,15 @@ Design
 * OTP codes are 4 random digits (``settings.OTP_LENGTH``).
 * They live in the Django cache (Redis in prod) under a namespaced key,
   with a TTL of ``settings.OTP_TTL_SECONDS`` (default 120s).
-* Each phone number is rate-limited two ways:
-    1. **Resend cooldown** — once an OTP is issued, no new OTP can be
-       issued for the same phone for ``RESEND_COOLDOWN_SECONDS``
-       seconds. This is enforced server-side regardless of DRF
-       throttling so a misbehaving frontend cannot blow up Kavenegar
-       billing.
-    2. **Verification attempts** — at most ``MAX_VERIFY_ATTEMPTS``
-       wrong submissions per issued code. After that the code is
-       invalidated and the user must request a new one.
+* Each issued code allows at most ``MAX_VERIFY_ATTEMPTS`` wrong
+  submissions. After that the code is invalidated and the user must
+  request a new one.
 * The Kavenegar call goes through :mod:`users.auth.sms` so it can be
   swapped for a fake in tests via ``settings.OTP_FAKE_MODE = True``.
 
 The service is intentionally framework-agnostic — DRF views call
 :class:`OTPService` directly. Errors surface as
-:class:`core.exceptions.OTPError` (HTTP 400) or
-:class:`OTPRateLimited` (HTTP 429).
+:class:`core.exceptions.OTPError` (HTTP 400).
 """
 
 from __future__ import annotations
@@ -33,9 +26,6 @@ from typing import Optional
 
 from django.conf import settings
 from django.core.cache import cache
-
-from rest_framework import status
-from rest_framework.exceptions import APIException
 
 from core.exceptions import OTPError
 from users.models import OTP
@@ -52,21 +42,7 @@ logger = logging.getLogger("retano.auth.otp")
 
 DEFAULT_OTP_TTL_SECONDS = 120
 DEFAULT_OTP_LENGTH = 4
-RESEND_COOLDOWN_SECONDS = 60
 MAX_VERIFY_ATTEMPTS = 5
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Exceptions
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class OTPRateLimited(APIException):
-    """Raised when an OTP request comes in before the cooldown elapses."""
-
-    status_code = status.HTTP_429_TOO_MANY_REQUESTS
-    default_detail = "Please wait before requesting another OTP."
-    default_code = "otp_rate_limited"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -80,10 +56,6 @@ def _code_key(phone: str) -> str:
 
 def _attempts_key(phone: str) -> str:
     return f"otp:attempts:{phone}"
-
-
-def _cooldown_key(phone: str) -> str:
-    return f"otp:cooldown:{phone}"
 
 
 def _record_key(phone: str) -> str:
@@ -120,9 +92,6 @@ class OTPService:
         self._sender = sender or get_default_sender()
         self._ttl = getattr(settings, "OTP_TTL_SECONDS", DEFAULT_OTP_TTL_SECONDS)
         self._length = getattr(settings, "OTP_LENGTH", DEFAULT_OTP_LENGTH)
-        self._cooldown = getattr(
-            settings, "OTP_RESEND_COOLDOWN_SECONDS", RESEND_COOLDOWN_SECONDS
-        )
         self._max_attempts = getattr(
             settings, "OTP_MAX_VERIFY_ATTEMPTS", MAX_VERIFY_ATTEMPTS
         )
@@ -131,21 +100,12 @@ class OTPService:
 
     def issue(self, phone_number: str) -> OTPIssueResult:
         """Generate an OTP, persist it, and send the SMS."""
-        if cache.get(_cooldown_key(phone_number)):
-            raise OTPRateLimited()
-
         code = self._generate_code()
 
         # Persist the code first, then send. If sending fails we delete it
         # so an undelivered OTP cannot accidentally authenticate someone.
         cache.set(_code_key(phone_number), code, timeout=self._ttl)
         cache.set(_attempts_key(phone_number), 0, timeout=self._ttl)
-        cache.set(
-            _cooldown_key(phone_number),
-            "1",
-            timeout=self._cooldown,
-        )
-
         OTP.objects.purge_expired()
         otp = OTP.objects.create(otp_code=code)
         cache.set(_record_key(phone_number), otp.pk, timeout=self._ttl)
@@ -157,7 +117,6 @@ class OTPService:
             cache.delete(_record_key(phone_number))
             cache.delete(_code_key(phone_number))
             cache.delete(_attempts_key(phone_number))
-            # We keep the cooldown so retries are still throttled.
             logger.exception("Failed to send OTP to %s", phone_number)
             raise OTPError(
                 "Could not send the verification SMS. Please try again shortly."
@@ -167,7 +126,7 @@ class OTPService:
         return OTPIssueResult(
             phone_number=phone_number,
             ttl_seconds=self._ttl,
-            resend_in_seconds=self._cooldown,
+            resend_in_seconds=0,
             debug_code=code if self._sender.is_fake else None,
         )
 

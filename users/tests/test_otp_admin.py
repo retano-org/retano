@@ -55,6 +55,17 @@ def test_successful_fake_issue_stores_exact_code():
 
 
 @override_settings(OTP_TTL_SECONDS=120)
+def test_otp_can_be_reissued_immediately_without_cooldown():
+    service = OTPService(sender=FakeOTPSender())
+
+    first = service.issue("+989120000017")
+    second = service.issue("+989120000017")
+
+    assert first.resend_in_seconds == 0
+    assert second.resend_in_seconds == 0
+
+
+@override_settings(OTP_TTL_SECONDS=120)
 def test_failed_issue_does_not_store_code():
     with pytest.raises(OTPError):
         OTPService(sender=FailingOTPSender()).issue("+989120000014")

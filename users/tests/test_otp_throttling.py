@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from users.throttles import OTPPhoneScopedRateThrottle
+from users.throttles import OTPPhoneScopedRateThrottle, OTPRequestPhoneRateThrottle
 
 
 def _cache_key(phone_number: str, remote_addr: str = "203.0.113.10") -> str:
@@ -25,3 +25,9 @@ def test_otp_throttle_is_not_affected_by_ip_for_valid_phones():
     assert _cache_key("09120000001", "203.0.113.10") == _cache_key(
         "09120000001", "203.0.113.11"
     )
+
+
+def test_otp_request_throttle_uses_exactly_120_second_window():
+    throttle = OTPRequestPhoneRateThrottle()
+
+    assert throttle.parse_rate("5/120seconds") == (5, 120)
