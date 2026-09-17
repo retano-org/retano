@@ -77,3 +77,11 @@ a new upload. Do not reuse the failed job:
 ```powershell
 docker compose up -d --force-recreate web worker
 ```
+
+
+
+docker exec -i supabase-db psql -U postgres -d postgres -c \
+"SELECT pid, now()-xact_start AS age, wait_event_type, state, left(query,60) FROM pg_stat_activity WHERE state<>'idle' AND pid<>pg_backend_pid();"
+
+
+docker exec supabase-db cat /tmp/del9.log
