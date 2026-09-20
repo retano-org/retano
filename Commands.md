@@ -80,8 +80,67 @@ docker compose up -d --force-recreate web worker
 
 
 
+
+
+
+
+docker exec -d supabase-db bash -c "psql -U postgres -d postgres > /tmp/del9.log 2>&1 <<'SQL'
+\timing on
+BEGIN;
+DELETE FROM public.users_unnormalized_data WHERE tenant_id = 9;
+SELECT cascade_orphaned_identity_now();
+COMMIT;
+SQL"
+
+
+
+
+docker exec -i supabase-db psql -U postgres -d postgres <<'SQL'
+\timing on
+BEGIN;
+DELETE FROM public.products_unnormalized_data WHERE tenant_id = 9;
+SELECT cascade_orphaned_identity_now();
+COMMIT;
+SQL
+
+
+
+
 docker exec -i supabase-db psql -U postgres -d postgres -c \
-"SELECT pid, now()-xact_start AS age, wait_event_type, state, left(query,60) FROM pg_stat_activity WHERE state<>'idle' AND pid<>pg_backend_pid();"
+"VACUUM (ANALYZE) users, orders, order_items, user_summary, user_attribute_scores, users_unnormalized_data, _retano_deleted_identity;"
 
 
-docker exec supabase-db cat /tmp/del9.log
+
+
+
+docker exec -i supabase-db psql -U postgres -d postgres <<'SQL'
+SELECT cron.schedule('refresh_user_summary_rfm_metrics', '0 2 * * *',
+                     $$SELECT refresh_user_summary_rfm_metrics();$$);
+SELECT cron.schedule('refresh_buying_power', '20 2 * * *',
+                     $$SELECT refresh_buying_power();$$);
+SELECT cron.schedule('refresh_rfm_scores', '40 2 * * *',
+                     $$SELECT refresh_rfm_scores();$$);
+SQL
+
+
+
+
+
+
+docker exec -d supabase-db bash -c "psql -U postgres -d postgres > /tmp/rfm.log 2>&1 <<'SQL'
+\timing on
+SELECT update_user_top_products();
+SQL"
+
+
+
+
+docker exec -i supabase-db psql -U postgres -d postgres -c \
+"SELECT pid, now()-xact_start AS age, wait_event_type, state, left(query,60) FROM pg_stat_activity WHERE state<>'idle' AND pid<>pg_backend_pid() ORDER BY xact_start;"
+
+
+
+curl -s -X POST http://localhost:8000/functions/v1/send-campaign-sms \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer REDACTED" \
+  -d '{"tenant_id": 9}'
