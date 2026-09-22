@@ -699,6 +699,10 @@ class SyncConfig(models.Model):
         default=1000,
         help_text="Max rows per POST from the ETL to the data ingest endpoints.",
     )
+    user_cursor_column = models.CharField(max_length=255, blank=True, default="")
+    product_cursor_column = models.CharField(max_length=255, blank=True, default="")
+    user_cursor_value = models.JSONField(null=True, blank=True)
+    product_cursor_value = models.JSONField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -835,6 +839,18 @@ class SyncRun(models.Model):
         related_name="sync_runs",
     )
 
+    client_run_id = models.UUIDField(null=True, blank=True)
+    instance_id = models.UUIDField(null=True, blank=True)
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
+    customers_upload_job = models.OneToOneField(
+        UploadJob, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="customer_sync_run",
+    )
+    products_upload_job = models.OneToOneField(
+        UploadJob, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="product_sync_run",
+    )
+
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="running")
 
     failure_stage = models.CharField(
@@ -860,6 +876,16 @@ class SyncRun(models.Model):
 
     class Meta:
         ordering = ["-started_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "client_run_id"],
+                name="uq_sync_run_tenant_client_run",
+            ),
+            models.UniqueConstraint(
+                fields=["tenant"], condition=models.Q(status="running"),
+                name="uq_sync_run_one_running_tenant",
+            ),
+        ]
         indexes = [
             models.Index(fields=["tenant", "-started_at"]),
             models.Index(fields=["status"]),
@@ -896,3 +922,35 @@ class SyncRun(models.Model):
         if self.status == "success":
             return "Sync completed successfully."
         return ""
+
+
+class SyncBatch(models.Model):
+    """One transport-idempotent batch belonging to an automated sync run."""
+
+    ENTITY_CHOICES = [("user", "User"), ("product", "Product")]
+
+    run = models.ForeignKey(
+        SyncRun, on_delete=models.CASCADE, related_name="batches"
+    )
+    entity = models.CharField(max_length=10, choices=ENTITY_CHOICES)
+    batch_number = models.PositiveIntegerField()
+    idempotency_key = models.CharField(max_length=200, unique=True)
+    payload_hash = models.CharField(max_length=64)
+    cursor_after = models.JSONField(null=True, blank=True)
+    response_payload = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["run", "entity", "batch_number"],
+                name="uq_sync_batch_run_entity_number",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=["run", "entity"],
+                name="core_syncba_run_id_828a16_idx",
+            )
+        ]
+        ordering = ["entity", "batch_number"]

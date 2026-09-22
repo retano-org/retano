@@ -467,9 +467,11 @@ class SyncIngestResponseSerializer(serializers.Serializer):
 
 
 class SyncReportRecordedResponseSerializer(serializers.Serializer):
-    """201 response for POST /api/v1/sync/report/."""
+    """200 response for POST /api/v1/sync/report/."""
 
     message = serializers.CharField(default="Report recorded.")
+    run_id = serializers.UUIDField()
+    status = serializers.ChoiceField(choices=["success", "partial", "failed"])
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -503,6 +505,8 @@ class SyncFieldMappingListResponseSerializer(serializers.Serializer):
     """
 
     mappings = SyncFieldMappingRowSerializer(many=True)
+    user_cursor_column = serializers.CharField(allow_blank=True)
+    product_cursor_column = serializers.CharField(allow_blank=True)
 
 
 class SyncFieldMappingSavedResponseSerializer(serializers.Serializer):

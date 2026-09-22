@@ -13,20 +13,25 @@ Endpoints:
     POST /api/v1/sync/report/           — report run outcome / pre-flight failure
 """
 
-from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.schema import SYNC_CONFIG_FETCH_SCHEMA, SYNC_USER_INGEST_SCHEMA, SYNC_PRODUCT_INGEST_SCHEMA, SYNC_REPORT_SCHEMA
-from core.models import SyncFieldMapping, SyncRun
+from core.models import SyncFieldMapping
 from core.serializers_sync import (
     SyncConfigFetchSerializer,
     SyncDataRowsSerializer,
     SyncReportSerializer,
 )
-from core.services.sync_pipeline import ingest_product_rows, ingest_user_rows
+from core.services.sync_runs import (
+    SyncProtocolError,
+    begin_run,
+    finalize_run,
+    ingest_batch,
+    parse_run_headers,
+)
 from core.sync.authentication import TenantSyncAPIKeyAuthentication
 from core.sync.field_registry import get_field_specs, nullable_field_names
 
@@ -55,6 +60,14 @@ class BaseSyncAPIView(APIView):
     def tenant(self):
         return self.request.auth.tenant
 
+    def handle_exception(self, exc):
+        if isinstance(exc, SyncProtocolError):
+            return Response(
+                {"status": "error", "error_type": exc.code, "message": str(exc)},
+                status=exc.status_code,
+            )
+        return super().handle_exception(exc)
+
 @SYNC_CONFIG_FETCH_SCHEMA
 class SyncConfigFetchView(BaseSyncAPIView):
     """
@@ -69,6 +82,10 @@ class SyncConfigFetchView(BaseSyncAPIView):
 
     def get(self, request):
         tenant = self.tenant
+        instance_id, run_id = parse_run_headers(request)
+        sync_config, run = begin_run(
+            tenant, self.sync_config, instance_id, run_id
+        )
         mappings = SyncFieldMapping.objects.filter(tenant=tenant)
         by_key = {(m.entity, m.field_name): m for m in mappings}
 
@@ -91,12 +108,23 @@ class SyncConfigFetchView(BaseSyncAPIView):
 
         payload = SyncConfigFetchSerializer(
             {
-                "batch_size": self.sync_config.batch_size,
+                "batch_size": sync_config.batch_size,
                 "mapping": mapping_payload,
                 "nullable_fields": {
                     "user": sorted(nullable_field_names("user")),
                     "product": sorted(nullable_field_names("product")),
                 },
+                "cursors": {
+                    "user": {
+                        "column": sync_config.user_cursor_column,
+                        "value": sync_config.user_cursor_value,
+                    },
+                    "product": {
+                        "column": sync_config.product_cursor_column,
+                        "value": sync_config.product_cursor_value,
+                    },
+                },
+                "lease_expires_at": run.lease_expires_at,
             }
         ).data
         return Response(payload, status=status.HTTP_200_OK)
@@ -120,10 +148,19 @@ class UserSyncIngestView(BaseSyncAPIView):
     def post(self, request):
         serializer = SyncDataRowsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        rows = serializer.validated_data["rows"]
-
-        result = ingest_user_rows(self.tenant, rows)
-        return Response(result.as_dict(), status=status.HTTP_200_OK)
+        instance_id, run_id = parse_run_headers(request)
+        idempotency_key = request.headers.get("Idempotency-Key", "").strip()
+        if not idempotency_key:
+            raise SyncProtocolError(
+                "Idempotency-Key is required.",
+                code="missing_idempotency_key", status_code=400,
+            )
+        data = serializer.validated_data
+        result = ingest_batch(
+            self.tenant, instance_id, run_id, "user", data["batch_number"],
+            idempotency_key, data.get("cursor_after"), data["rows"],
+        )
+        return Response(result, status=status.HTTP_200_OK)
 
 @SYNC_PRODUCT_INGEST_SCHEMA
 class ProductSyncIngestView(BaseSyncAPIView):
@@ -132,10 +169,19 @@ class ProductSyncIngestView(BaseSyncAPIView):
     def post(self, request):
         serializer = SyncDataRowsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        rows = serializer.validated_data["rows"]
-
-        result = ingest_product_rows(self.tenant, rows)
-        return Response(result.as_dict(), status=status.HTTP_200_OK)
+        instance_id, run_id = parse_run_headers(request)
+        idempotency_key = request.headers.get("Idempotency-Key", "").strip()
+        if not idempotency_key:
+            raise SyncProtocolError(
+                "Idempotency-Key is required.",
+                code="missing_idempotency_key", status_code=400,
+            )
+        data = serializer.validated_data
+        result = ingest_batch(
+            self.tenant, instance_id, run_id, "product", data["batch_number"],
+            idempotency_key, data.get("cursor_after"), data["rows"],
+        )
+        return Response(result, status=status.HTTP_200_OK)
 
 
 @SYNC_REPORT_SCHEMA
@@ -160,20 +206,8 @@ class SyncReportView(BaseSyncAPIView):
     def post(self, request):
         serializer = SyncReportSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        data = serializer.validated_data
-
-        SyncRun.objects.create(
-            tenant=self.tenant,
-            status=data["status"],
-            failure_stage=data.get("failure_stage"),
-            failure_detail=data.get("failure_detail", ""),
-            users_rows_received=data.get("users_rows_received", 0),
-            users_rows_accepted=data.get("users_rows_accepted", 0),
-            users_rows_rejected=data.get("users_rows_rejected", 0),
-            products_rows_received=data.get("products_rows_received", 0),
-            products_rows_accepted=data.get("products_rows_accepted", 0),
-            products_rows_rejected=data.get("products_rows_rejected", 0),
-            finished_at=timezone.now(),
+        instance_id, run_id = parse_run_headers(request)
+        payload = finalize_run(
+            self.tenant, instance_id, run_id, serializer.validated_data
         )
-
-        return Response({"message": "Report recorded."}, status=status.HTTP_201_CREATED)
+        return Response(payload, status=status.HTTP_200_OK)

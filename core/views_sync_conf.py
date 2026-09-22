@@ -75,6 +75,7 @@ class SyncFieldMappingView(APIView):
     @SYNC_FIELD_MAPPING_GET_SCHEMA
     def get(self, request):
         tenant = _tenant(request)
+        sync_config = _get_or_create_sync_config(tenant)
         existing = {
             (m.entity, m.field_name): m
             for m in SyncFieldMapping.objects.filter(tenant=tenant)
@@ -99,7 +100,14 @@ class SyncFieldMappingView(APIView):
                 else:
                     rows.append(SyncFieldMappingReadSerializer(mapping).data)
 
-        return Response({"mappings": rows}, status=status.HTTP_200_OK)
+        return Response(
+            {
+                "mappings": rows,
+                "user_cursor_column": sync_config.user_cursor_column,
+                "product_cursor_column": sync_config.product_cursor_column,
+            },
+            status=status.HTTP_200_OK,
+        )
     
 
     @SYNC_FIELD_MAPPING_PUT_SCHEMA
@@ -109,6 +117,63 @@ class SyncFieldMappingView(APIView):
         serializer.is_valid(raise_exception=True)
 
         with transaction.atomic():
+            sync_config = _get_or_create_sync_config(tenant)
+            existing_tables = {
+                entity: set(
+                    SyncFieldMapping.objects.filter(
+                        tenant=tenant, entity=entity
+                    ).exclude(client_table="").values_list("client_table", flat=True)
+                )
+                for entity in ("user", "product")
+            }
+            incoming_tables = {
+                entity: {
+                    item.get("client_table", "").strip()
+                    for item in serializer.validated_data["mappings"]
+                    if item["entity"] == entity and item.get("client_table", "").strip()
+                }
+                for entity in ("user", "product")
+            }
+            for entity in ("user", "product"):
+                checkpoint = getattr(sync_config, f"{entity}_cursor_value")
+                if (
+                    checkpoint is not None
+                    and existing_tables[entity]
+                    and incoming_tables[entity] != existing_tables[entity]
+                ):
+                    return Response(
+                        {
+                            "status": "error",
+                            "error_type": "source_table_change_requires_reset",
+                            "message": (
+                                f"Cannot change the {entity} source table after "
+                                "synchronization has started without an explicit "
+                                "checkpoint reset."
+                            ),
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
+            for entity in ("user", "product"):
+                field = f"{entity}_cursor_column"
+                if field not in serializer.validated_data:
+                    continue
+                new_column = serializer.validated_data[field].strip()
+                old_column = getattr(sync_config, field)
+                checkpoint = getattr(sync_config, f"{entity}_cursor_value")
+                if checkpoint is not None and old_column != new_column:
+                    return Response(
+                        {
+                            "status": "error",
+                            "error_type": "cursor_change_requires_reset",
+                            "message": (
+                                f"Cannot change {field} after synchronization has "
+                                "started without an explicit checkpoint reset."
+                            ),
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                setattr(sync_config, field, new_column)
+
             for item in serializer.validated_data["mappings"]:
                 SyncFieldMapping.objects.update_or_create(
                     tenant=tenant,
@@ -119,6 +184,9 @@ class SyncFieldMappingView(APIView):
                         "client_column": item.get("client_column", "").strip(),
                     },
                 )
+            sync_config.save(update_fields=[
+                "user_cursor_column", "product_cursor_column", "updated_at"
+            ])
 
         return Response(
             {"message": "نگاشت ستون‌ها با موفقیت ذخیره شد."},
@@ -176,6 +244,20 @@ class SyncApiKeyGenerateView(APIView):
             )
 
         sync_config = _get_or_create_sync_config(tenant)
+        missing_cursors = [
+            name for name in ("user_cursor_column", "product_cursor_column")
+            if not getattr(sync_config, name).strip()
+        ]
+        if missing_cursors:
+            return Response(
+                {
+                    "status": "error",
+                    "error_type": "cursor_incomplete",
+                    "message": "Configure an immutable incremental cursor column for both entities.",
+                    "missing_fields": missing_cursors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         raw_key = sync_config.generate_new_api_key()
         sync_config.is_enabled = True
         sync_config.save(update_fields=["is_enabled"])

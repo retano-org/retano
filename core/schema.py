@@ -621,11 +621,10 @@ SYNC_USER_INGEST_SCHEMA = extend_schema(
         "before calling this — this endpoint performs per-field, per-row "
         "type coercion only, never schema validation, and has no "
         "visibility into the tenant's database.\n\n"
-        "Row identity is the COMPOSITE (internal_user_id, "
-        "internal_order_id) — a flat per-order-line table, so the same "
-        "user appears in many rows, one per order. A row matching an "
-        "existing (internal_user_id, internal_order_id) pair is treated "
-        "as an UPDATE to that specific order line, not a new record.\n\n"
+        "Rows are append-only and job-scoped. This endpoint never looks "
+        "up, updates, or deletes existing business rows. Retry safety is "
+        "provided by Idempotency-Key and run/batch metadata, not business-"
+        "row duplicate detection.\n\n"
         "Coercion failures reject the ROW, not the batch — except for "
         "first_product_attribute/second_product_attribute on the product "
         "side, where a coercion failure degrades that field to NULL and "
@@ -650,8 +649,10 @@ SYNC_USER_INGEST_SCHEMA = extend_schema(
                         "NOT pre-coerce types itself."
                     ),
                 },
+                "batch_number": {"type": "integer", "minimum": 1},
+                "cursor_after": {"type": "object"},
             },
-            "required": ["rows"],
+            "required": ["rows", "batch_number", "cursor_after"],
         },
     },
     responses={
@@ -681,8 +682,10 @@ SYNC_PRODUCT_INGEST_SCHEMA = extend_schema(
                     "items": {"type": "object"},
                     "maxItems": 20000,
                 },
+                "batch_number": {"type": "integer", "minimum": 1},
+                "cursor_after": {"type": "object"},
             },
-            "required": ["rows"],
+            "required": ["rows", "batch_number", "cursor_after"],
         },
     },
     responses={
@@ -713,7 +716,7 @@ SYNC_REPORT_SCHEMA = extend_schema(
     ),
     request=SyncReportSerializer,
     responses={
-        201: SyncReportRecordedResponseSerializer,
+        200: SyncReportRecordedResponseSerializer,
         400: ErrorResponseSerializer,
         401: ErrorResponseSerializer,
     },

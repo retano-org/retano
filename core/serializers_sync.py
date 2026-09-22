@@ -54,6 +54,12 @@ class SyncConfigMappingBulkSerializer(serializers.Serializer):
     """
 
     mappings = SyncFieldMappingSerializer(many=True)
+    user_cursor_column = serializers.CharField(
+        max_length=255, required=False, allow_blank=False, trim_whitespace=True
+    )
+    product_cursor_column = serializers.CharField(
+        max_length=255, required=False, allow_blank=False, trim_whitespace=True
+    )
 
     def validate_mappings(self, value):
         if not value:
@@ -103,6 +109,10 @@ class SyncConfigStatusSerializer(serializers.ModelSerializer):
             "api_key_prefix",
             "api_key_generated_at",
             "batch_size",
+            "user_cursor_column",
+            "product_cursor_column",
+            "user_cursor_value",
+            "product_cursor_value",
             "latest_run_status",
             "latest_run_message",
         ]
@@ -166,6 +176,8 @@ class SyncConfigFetchSerializer(serializers.Serializer):
     batch_size = serializers.IntegerField()
     mapping = serializers.DictField()
     nullable_fields = serializers.DictField()
+    cursors = serializers.DictField()
+    lease_expires_at = serializers.DateTimeField()
 
 
 class SyncDataRowsSerializer(serializers.Serializer):
@@ -189,6 +201,8 @@ class SyncDataRowsSerializer(serializers.Serializer):
     rows = serializers.ListField(
         child=serializers.DictField(), allow_empty=True, max_length=20000
     )
+    batch_number = serializers.IntegerField(min_value=1)
+    cursor_after = serializers.JSONField(required=False, allow_null=True)
 
 
 class SyncReportSerializer(serializers.Serializer):
