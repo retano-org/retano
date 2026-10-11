@@ -15,9 +15,10 @@ from .base import *  # noqa: F401, F403
 DEBUG = False
 
 ALLOWED_HOSTS = [
-    "panel.retano360.com",
-    "retano360.com",
-    "www.retano360.com",
+    "panel.retano.ir",
+    "www.retano.ir",
+    "retano.ir",
+    "194.59.170.105",
     "127.0.0.1",
     "localhost",
     "185.81.96.206",
@@ -27,27 +28,28 @@ ALLOWED_HOSTS = [
 # Security — full hardening
 # ─────────────────────────────────────────────────────────────────────────────
 
-SECURE_SSL_REDIRECT = True
-SECURE_HSTS_SECONDS = 31_536_000  # 1 year
-SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-SECURE_HSTS_PRELOAD = True
+SECURE_SSL_REDIRECT = False
+SECURE_HSTS_SECONDS = 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = False
+SECURE_HSTS_PRELOAD = False
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = "DENY"
 
-SESSION_COOKIE_SECURE = True
+SESSION_COOKIE_SECURE = False
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"
 
-CSRF_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = False
 CSRF_COOKIE_HTTPONLY = True
 CSRF_COOKIE_SAMESITE = "Lax"
 
 CSRF_TRUSTED_ORIGINS = [
-    "https://retano360.com",
-    "https://www.retano360.com",
-    "https://panel.retano360.com",
+    "https://retano.ir",
+    "https://retano.ir",
+    "https://panel.retano.ir",
+    "http://194.59.170.105",
 ]
 # ─────────────────────────────────────────────────────────────────────────────
 # CORS — whitelist only the React frontend origin
@@ -79,7 +81,7 @@ EMAIL_PORT = int(os.environ.get("EMAIL_PORT", 587))
 EMAIL_USE_TLS = True
 EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
-DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "noreply@retano360.com")
+DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "noreply@retano.ir")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging — structured file + console logging
