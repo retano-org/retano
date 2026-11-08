@@ -130,6 +130,7 @@ services:
       - ./nginx/certbot/conf:/etc/letsencrypt:ro
       - ./nginx/certbot/www:/var/www/certbot:ro
       - ./productionExecutable:/usr/share/nginx/app:ro
+      - ./landing:/usr/share/nginx/landing:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

@@ -1,0 +1,152 @@
+name: retano
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-retano_db}
+      POSTGRES_USER: ${DB_USER:-retano_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-retano_user} -d ${DB_NAME:-retano_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - retano_internal
+    # No ports published to the host — only reachable by other containers on
+    # retano_internal. Remove this comment's constraint (add "ports:") only
+    # for local debugging with a DB client on the host.
+
+
+  certbot:
+    image: certbot/certbot
+    volumes:
+      - ./nginx/certbot/conf:/etc/letsencrypt
+      - ./nginx/certbot/www:/var/www/certbot
+    networks:
+      - retano_internal
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - retano_internal
+
+  web:
+    image: ${IMAGE_NAME:-retano}:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.production
+    volumes:
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+      - log_volume:/var/log/retano
+    depends_on:
+      redis:
+        condition: service_healthy
+      # db is intentionally NOT a hard dependency here: in production DB_HOST
+      # points at Supabase (external), so there is no local `db` service to
+      # wait on. If you deleted the `db` service per the note above, remove
+      # this whole depends_on block reference to it as well -- it's already
+      # absent. If you keep `db` for local/staging use, uncomment below:
+      # db:
+      #   condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/admin/login/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    networks:
+      - retano_internal
+
+  worker:
+    image: ${IMAGE_NAME:-retano}:${IMAGE_TAG:-latest}
+    # Reuses the exact same image as `web` -- same code, same dependencies,
+    # only the command differs. This guarantees the worker can never drift
+    # out of sync with the web image (no separate build/tag to forget).
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.production
+    command:
+      [
+        "celery", "-A", "Retano", "worker",
+        "--loglevel=info",
+        "-Q", "uploads,celery",
+        "--concurrency=2"
+      ]
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A Retano inspect ping -d celery@$$HOSTNAME || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    volumes:
+      - media_volume:/app/media
+      - log_volume:/var/log/retano
+    depends_on:
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    # Graceful shutdown: CELERY_TASK_ACKS_LATE=True (config/settings/base.py)
+    # means an in-flight task is redelivered if the worker dies mid-task, so
+    # this stop_grace_period gives a running upload task room to finish
+    # before Docker SIGKILLs the process on `docker compose down` / redeploy.
+    stop_grace_period: 60s
+    networks:
+      - retano_internal
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:80"
+    volumes:
+      - ./nginx/panel.conf:/etc/nginx/conf.d/default.conf:ro
+      - static_volume:/app/staticfiles:ro
+      - media_volume:/app/media:ro
+      - ./nginx/certbot/conf:/etc/letsencrypt:ro
+      - ./nginx/certbot/www:/var/www/certbot:ro
+      - ./productionExecutable:/usr/share/nginx/app:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      web:
+        condition: service_healthy
+    networks:
+      - retano_internal
+
+volumes:
+  postgres_data:
+  redis_data:
+  static_volume:
+  media_volume:
+  log_volume:
+
+networks:
+  retano_internal:
+    driver: bridge
+
+

@@ -2,7 +2,7 @@
 <html lang="fa" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>ریتانو ۳۶۰ | سامانه حفظ مشتریان و تحلیل RFM</title>
 
     <!-- Meta SEO Tags -->
@@ -29,8 +29,12 @@
     <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
     <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
     <link rel="manifest" href="manifest.json">
-    <meta name="theme-color" content="#0F172A">
+    <meta name="theme-color" content="#00A6A2">
     <link type="text/css" rel="stylesheet" href="styles.css">
+    <script>
+        // Match the splash to the theme the user picked last time (stored by the app as pref_theme).
+        try { if (localStorage.getItem("pref_theme") === "DARK") document.documentElement.classList.add("dark"); } catch (e) {}
+    </script>
 
     <!-- Google JSON-LD Structured Data -->
     <script type="application/ld+json">
@@ -64,25 +68,55 @@
         </ul>
     </div>
 
-    <!-- Retano360 Custom Web Splash Screen -->
-    <div id="splash-screen">
-        <div class="splash-logo-container">
-            <div class="splash-ring"></div>
-            <div class="splash-logo">
-                <svg viewBox="0 0 24 24">
-                    <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
-                    <polyline points="2 17 12 22 22 17"></polyline>
-                    <polyline points="2 12 12 17 22 12"></polyline>
-                </svg>
-            </div>
+    <div id="app"></div>
+
+    <!-- Splash screen: the app removes it once its fonts are loaded -->
+    <div id="splash-screen" role="status" aria-live="polite">
+        <div class="splash-logo">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+                <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+                <polyline points="2 17 12 22 22 17"></polyline>
+                <polyline points="2 12 12 17 22 12"></polyline>
+            </svg>
         </div>
         <div class="splash-title">ریتانو ۳۶۰</div>
-        <div class="splash-subtitle">سامانه مدیریت حفظ و بازگشت مشتریان</div>
-        <div class="splash-progress-bar">
-            <div class="splash-progress-value"></div>
+        <div class="splash-subtitle" id="splash-subtitle">در حال بارگذاری پنل…</div>
+        <div class="splash-progress-bar"><div class="splash-progress-value"></div></div>
+    </div>
+
+    <div id="unsupported" role="alert">
+        <div class="box">
+            <strong>مرورگر شما از این پنل پشتیبانی نمی‌کند</strong>
+            <p>لطفاً مرورگر خود را به‌روزرسانی کنید یا از نسخه جدید Chrome، Edge، Firefox یا Safari استفاده کنید.</p>
         </div>
     </div>
 
-    <script type="application/javascript" src="webApp.js"></script>
+    <script>
+        (function () {
+            // Kotlin/Wasm needs WebAssembly GC (Chrome 119+, Firefox 120+, Safari 18.2+).
+            var supported = false;
+            try {
+                supported = typeof WebAssembly === "object" &&
+                    WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 95, 1, 120, 0]));
+            } catch (e) { supported = false; }
+            if (!supported) {
+                document.getElementById("unsupported").classList.add("visible");
+                var splash = document.getElementById("splash-screen");
+                if (splash) splash.remove();
+                return;
+            }
+            var script = document.createElement("script");
+            script.src = "webApp.js";
+            script.onerror = function () {
+                var sub = document.getElementById("splash-subtitle");
+                if (sub) sub.textContent = "بارگذاری انجام نشد. اتصال اینترنت را بررسی و صفحه را دوباره باز کنید.";
+            };
+            document.body.appendChild(script);
+            setTimeout(function () {
+                var sub = document.getElementById("splash-subtitle");
+                if (document.getElementById("splash-screen") && sub) sub.textContent = "کمی بیشتر از معمول طول کشید؛ لطفاً صبر کنید…";
+            }, 12000);
+        })();
+    </script>
 </body>
 </html>
