@@ -27,8 +27,8 @@ from rest_framework.views import APIView
 from django.conf import settings
 from django.db import connection
 from core.schema import TRENDS_REPORT_SCHEMA, SALES_RANGE_REPORT_SCHEMA, SEGMENTS_REPORT_SCHEMA, ACTIVE_USERS_REPORT_SCHEMA, RETENTION_REPORT_SCHEMA
-from core.utils.jalali import last_n_jalali_years
 from core.utils.analytics import (
+    get_trend_years,
     get_yearly_trends,
     get_yearly_trends_for_month,
     get_yearly_retention,
@@ -115,9 +115,10 @@ class TrendsReportView(APIView):
 
     1) Yearly (default — سال dropdown left unselected):
         GET /api/v1/reports/trends/
-        Returns the last 4 Jalali years ending at the current Jalali year
-        (e.g. 1402, 1403, 1404, 1405), zero-filled for years with no
-        orders. This is a fixed window — NOT "all years in the DB".
+        Returns every Jalali year from the tenant's earliest order up to
+        the current Jalali year (e.g. 1400 ... 1405), zero-filled for
+        years with no orders. A tenant with no orders yet gets the last
+        4 Jalali years so the chart still has an axis.
 
     2) Monthly (سال dropdown has a specific month selected):
         GET /api/v1/reports/trends/?granularity=month
@@ -168,7 +169,7 @@ class TrendsReportView(APIView):
             return cached
 
         if granularity == "year":
-            years = last_n_jalali_years(4)
+            years = get_trend_years(tenant_id)
             trends = get_yearly_trends(tenant_id, years=years)
             data = [
                 {"jalali_year": y, **trends[y]}

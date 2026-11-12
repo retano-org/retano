@@ -129,7 +129,7 @@ SQL
 
 docker exec -d supabase-db bash -c "psql -U postgres -d postgres > /tmp/rfm.log 2>&1 <<'SQL'
 \timing on
-SELECT update_user_top_products();
+SELECT fill_final_messages();
 SQL"
 
 
@@ -144,3 +144,9 @@ curl -s -X POST http://localhost:8000/functions/v1/send-campaign-sms \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer REDACTED" \
   -d '{"tenant_id": 9}'
+
+docker exec supabase-db tail -f /tmp/rfm.log
+
+
+docker compose exec db psql -U postgres -c \
+ "update trigger_results set processed=false, status='pending', retry_count=0, error_message=null where id=137627;"

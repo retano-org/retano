@@ -10,7 +10,7 @@ from django.conf import settings
 from django.core.cache import cache
 
 logger = logging.getLogger("retano.analytics.cache")
-_CACHE_FORMAT_VERSION = "v1"
+_CACHE_FORMAT_VERSION = "v2"  # v2: trends cover full order history
 _PAYLOAD_KEY = "payload"
 _CREATED_AT_KEY = "created_at"
 

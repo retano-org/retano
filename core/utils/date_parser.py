@@ -7,9 +7,37 @@ import pandas as pd
 from dateutil import parser
 
 
+# A 4-digit year in [1200, 1700) is Jalali: no real order data has a
+# Gregorian year that early, and current Jalali years (~1400) sit inside.
+_JALALI_YEAR_MIN = 1200
+_JALALI_YEAR_MAX = 1700
+
+_DIGIT_TRANSLATION = str.maketrans(
+    "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"
+)
+
+# 1402-08-12, 1402/8/12, 1402.08.12 (optionally followed by a time part)
+_YMD_PATTERN = re.compile(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?!\d)")
+
+
+def _jalali_ymd_to_iso(year, month, day):
+    """Convert a Jalali y/m/d to a Gregorian YYYY-MM-DD string."""
+    import jdatetime
+
+    try:
+        return jdatetime.date(year, month, day).togregorian().strftime("%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid Jalali date: {year:04d}-{month:02d}-{day:02d}"
+        ) from exc
+
+
 class FlexibleDateParser:
     """
-    Parses dates from various formats into YYYY-MM-DD
+    Parses dates from various formats into YYYY-MM-DD.
+
+    Jalali (Persian) dates are converted to Gregorian: the DB stores
+    Gregorian dates and the reports convert back to Jalali years.
     """
 
     @staticmethod
@@ -23,6 +51,11 @@ class FlexibleDateParser:
 
         # If it's already a datetime object
         if isinstance(date_value, (datetime, pd.Timestamp)):
+            if _JALALI_YEAR_MIN <= date_value.year < _JALALI_YEAR_MAX:
+                # Excel cell holding a Jalali date as a (bogus) Gregorian one.
+                return _jalali_ymd_to_iso(
+                    date_value.year, date_value.month, date_value.day
+                )
             return date_value.strftime("%Y-%m-%d")
 
         # If it's a number (Excel serial date)
@@ -38,26 +71,15 @@ class FlexibleDateParser:
         if isinstance(date_value, str):
             date_value = date_value.strip()
 
-            # Try Persian/Jalali dates first if needed (you can add this)
-            # persian_date = FlexibleDateParser.parse_persian_date(date_value)
-            # if persian_date:
-            #     return persian_date
-
-            # Common Persian date patterns (optional)
-            # Example: "1402-08-12", "1402/08/12"
-            persian_patterns = [
-                r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})",  # 1402-08-12 or 1402/08/12
-            ]
-
-            for pattern in persian_patterns:
-                match = re.match(pattern, date_value)
-                if match:
-                    year, month, day = map(int, match.groups())
-                    if year > 1000:  # Likely Persian year
-                        # You would need a Persian calendar converter here
-                        # For now, we'll just store as-is and warn
-                        # You can use `persian` or `jdatetime` library
-                        pass
+            # Jalali dates ("1402-08-12", "1402/8/12", Persian digits too).
+            # Must run before dateutil, which would read 1402 as a
+            # Gregorian year and silently store the wrong date.
+            date_value = date_value.translate(_DIGIT_TRANSLATION)
+            match = _YMD_PATTERN.match(date_value)
+            if match:
+                year, month, day = map(int, match.groups())
+                if _JALALI_YEAR_MIN <= year < _JALALI_YEAR_MAX:
+                    return _jalali_ymd_to_iso(year, month, day)
 
             # Try python-dateutil parser (handles many formats)
             try:

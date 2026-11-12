@@ -18,6 +18,7 @@ from datetime import date
 from django.db import connection
 
 from core.utils.jalali import (
+    current_jalali_year,
     gregorian_to_jalali_year,
     jalali_year_to_gregorian_range,
     last_n_jalali_years,
@@ -55,17 +56,54 @@ _TRENDS_QUERY_RANGE = """
 """
 
 
+_ORDER_DATE_BOUNDS_QUERY = """
+    SELECT MIN(o.order_date), MAX(o.order_date)
+    FROM public.orders o
+    JOIN public.users u ON o.user_id = u.user_id
+    WHERE u.tenant_id = %s
+      AND o.order_date IS NOT NULL
+      AND o.total_amount IS NOT NULL
+"""
+
+
+def get_trend_years(tenant_id: int) -> list[int]:
+    """
+    Jalali years the yearly trends chart should cover for this tenant:
+    every year from the tenant's earliest order up to the current Jalali
+    year (or the latest order year, if that is somehow later), oldest
+    first, so years without orders in between are zero-filled.
+
+    A tenant with no orders yet falls back to the last 4 Jalali years so
+    the chart still has an axis to render.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(_ORDER_DATE_BOUNDS_QUERY, [tenant_id])
+        first, last = cursor.fetchone() or (None, None)
+
+    if first is None or last is None:
+        return last_n_jalali_years(4)
+
+    if isinstance(first, str):
+        first = date.fromisoformat(first[:10])
+    if isinstance(last, str):
+        last = date.fromisoformat(last[:10])
+
+    first_year = gregorian_to_jalali_year(first)
+    last_year = max(gregorian_to_jalali_year(last), current_jalali_year())
+    return list(range(first_year, last_year + 1))
+
+
 def get_yearly_trends(tenant_id: int, years: list[int] | None = None) -> dict[int, dict]:
     """
     Returns {jalali_year: {"customer_count": int, "revenue": float, "clv": float}}
     for every year in `years`. Years with no orders are zero-filled.
 
-    If `years` is None, defaults to the last 4 Jalali years ending at the
-    current Jalali year (per product requirement — NOT the full order
-    history, and NOT the mockup's off-by-one 1401-1404 range).
+    If `years` is None, defaults to get_trend_years(tenant_id): the
+    tenant's full history, from its earliest order year to the current
+    Jalali year.
     """
     if years is None:
-        years = last_n_jalali_years(4)
+        years = get_trend_years(tenant_id)
 
     # Fetch only rows inside the requested year span, to avoid pulling a
     # tenant's entire order history when only 4 years are needed.
