@@ -27,21 +27,38 @@ Every business rule from the old synchronous pipeline is preserved:
 """
 
 import io
+from datetime import timedelta
+from functools import wraps
 
 import openpyxl
 import pandas as pd
 from celery import shared_task
 
+from django.conf import settings
 from django.core.files.base import ContentFile
-from django.db import connection, transaction
+from django.db import OperationalError, connection, transaction
+from django.db.models import Q
+from django.utils import timezone
 
 from core.models import (
     Coupon,
     CouponFileUpload,
     CustomerFileUpload,
     ErrorLog,
+    ManualUploadPair,
     ProductFileUpload,
     UploadJob,
+)
+from core.services.manual_uploads import (
+    POST_UPLOAD_FUNCTIONS,
+    claim_pair,
+    delete_previous_manual_data,
+    expire_product_upload,
+    lock_tenant,
+    mark_pair_failed,
+    mark_pair_imported,
+    pair_for_job,
+    run_post_upload_sql,
 )
 from core.services.storage import delete_from_storage, download_to_tempfile
 from core.utils.date_parser import FlexibleDateParser
@@ -56,28 +73,32 @@ CHUNK_SIZE = 50_000  # overridden by settings.UPLOAD_CHUNK_SIZE where imported
 
 
 def _chunk_size():
-    from django.conf import settings
-
     return getattr(settings, "UPLOAD_CHUNK_SIZE", CHUNK_SIZE)
 
 
 def _statement_timeout_ms() -> int:
-    from django.conf import settings
-
     return getattr(settings, "UPLOAD_DB_STATEMENT_TIMEOUT_MS", 7_200_000)
+
+
+POST_UPLOAD_SOFT_LIMIT = max(
+    settings.CELERY_TASK_SOFT_TIME_LIMIT,
+    len(POST_UPLOAD_FUNCTIONS) * (_statement_timeout_ms() // 1000) + 60,
+)
 
 
 def _claim_job(job_id: str, upload_type: str, task_id: str) -> UploadJob | None:
     """Atomically claim a job while making Celery redelivery idempotent."""
     with transaction.atomic():
         job = (
-            UploadJob.objects.select_for_update()
+            UploadJob.objects.select_for_update(of=("self",))
             .select_related("tenant")
             .get(id=job_id)
         )
         if job.upload_type != upload_type:
             raise ValueError(f"Upload job {job_id} is not a {upload_type} job.")
-        if job.status in (UploadJob.Status.SUCCESS, UploadJob.Status.PARTIAL):
+        if job.status in (
+            UploadJob.Status.SUCCESS, UploadJob.Status.PARTIAL, UploadJob.Status.FAILED
+        ):
             return None
         if (
             job.status == UploadJob.Status.PROCESSING
@@ -117,11 +138,35 @@ def _clear_job_staging(job: UploadJob) -> None:
         cursor.execute(f"DELETE FROM {table} WHERE upload_job_id = %s", [job.id])
 
 
+def _single_upload_worker(process_upload):
+    @wraps(process_upload)
+    def run(task, job_id):
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_try_advisory_lock(hashtext(%s), 704614)", [job_id])
+            if not cursor.fetchone()[0]:
+                return
+        upload_slot = False
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_try_advisory_lock_shared(873421, 1)")
+                upload_slot = cursor.fetchone()[0]
+            if upload_slot:
+                return process_upload(task, job_id)
+        finally:
+            with connection.cursor() as cursor:
+                if upload_slot:
+                    cursor.execute("SELECT pg_advisory_unlock_shared(873421, 1)")
+                cursor.execute("SELECT pg_advisory_unlock(hashtext(%s), 704614)", [job_id])
+    return run
+
+
 def _allocate_flush_and_finalize(
     job: UploadJob,
     flush_function: str,
     final_status: str,
     success_message_template: str,
+    *,
+    expected_rows: int | None = None,
 ) -> int:
     """Allocate, flush, and mark terminal success in one transaction.
 
@@ -130,19 +175,37 @@ def _allocate_flush_and_finalize(
     PROCESSING and could replay the entire file.
     """
     with transaction.atomic():
+        pair = claim_pair(job) if expected_rows is not None else None
+        if pair is not None and final_status != UploadJob.Status.SUCCESS:
+            raise ValueError("Every row must be valid to complete a paired upload.")
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT set_config('statement_timeout', %s, true)",
                 [str(_statement_timeout_ms())],
             )
+            if pair is not None:
+                delete_previous_manual_data(cursor, pair)
             cursor.execute("SELECT allocate_upload_job_ids(%s)", [job.id])
             cursor.execute(f"SELECT {flush_function}(%s)", [job.id])
             rows_saved = cursor.fetchone()[0] or 0
+            if pair is not None and rows_saved != expected_rows:
+                raise ValueError("The flush did not save all staged upload rows.")
 
         job.rows_saved = rows_saved
         job.status = final_status
         job.message = success_message_template.format(rows_saved=rows_saved)
         job.save(update_fields=["rows_saved", "status", "message", "updated_at"])
+        if pair is not None:
+            mark_pair_imported(pair)
+            if pair.status == ManualUploadPair.Status.READY:
+                transaction.on_commit(
+                    lambda: process_ready_manual_upload.delay(pair.pk, pair.tenant_id),
+                    robust=True,
+                )
+        elif expected_rows is not None:
+            transaction.on_commit(
+                lambda: schedule_analytics_refresh(job.tenant_id), robust=True,
+            )
         return rows_saved
 
 
@@ -206,7 +269,18 @@ def _copy_buffer_into(table_and_columns_sql: str, buf: io.StringIO):
             copy.write(buf.read())
 
 
+@transaction.atomic
 def _mark_failed(job: UploadJob, error_type: str, message: str):
+    if job.upload_type in (UploadJob.UploadType.CUSTOMERS, UploadJob.UploadType.PRODUCTS):
+        lock_tenant(job.tenant_id)
+        job.refresh_from_db(fields=["status"])
+        if job.status in (UploadJob.Status.SUCCESS, UploadJob.Status.PARTIAL):
+            return
+        pair = pair_for_job(job)
+        if pair is not None:
+            _clear_job_staging(job)
+            mark_pair_failed(pair)
+
     job.status = UploadJob.Status.FAILED
     job.error_type = error_type
     job.message = message
@@ -252,7 +326,8 @@ def _attach_uploaded_file(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@shared_task(bind=True, name="core.tasks.uploads.process_customers_upload")
+@shared_task(bind=True, name="core.tasks.uploads.process_customers_upload", reject_on_worker_lost=True)
+@_single_upload_worker
 def process_customers_upload(self, job_id: str):
     job = _claim_job(job_id, UploadJob.UploadType.CUSTOMERS, self.request.id)
     if job is None:
@@ -322,7 +397,7 @@ def process_customers_upload(self, job_id: str):
 
         final_status = (
             UploadJob.Status.SUCCESS
-            if total_processed == job.total_rows
+            if total_saved == job.total_rows
             else UploadJob.Status.PARTIAL
         )
         _allocate_flush_and_finalize(
@@ -330,9 +405,9 @@ def process_customers_upload(self, job_id: str):
             "flush_customers_upload_job",
             final_status,
             "{rows_saved} رکورد مشتریان با موفقیت در دیتابیس ذخیره شد.",
+            expected_rows=total_saved,
         )
         succeeded = True
-        schedule_analytics_refresh(tenant.id)
 
     except Exception as e:
         _mark_failed(
@@ -359,11 +434,9 @@ def _copy_customers_chunk(
     Returns (rows_saved_in_chunk, rows_processed_in_chunk).
     """
     df = pd.DataFrame()
-    df["internal_user_id"] = chunk_df.iloc[:, mapping["internal_id"]].astype(str)
-    df["internal_order_id"] = chunk_df.iloc[:, mapping["internal_order_id"]].astype(str)
-    df["internal_product_id"] = chunk_df.iloc[:, mapping["internal_product_id"]].astype(
-        str
-    )
+    df["internal_user_id"] = chunk_df.iloc[:, mapping["internal_id"]].astype("string").fillna("")
+    df["internal_order_id"] = chunk_df.iloc[:, mapping["internal_order_id"]].astype("string").fillna("")
+    df["internal_product_id"] = chunk_df.iloc[:, mapping["internal_product_id"]].astype("string").fillna("")
     df["first_name"] = (
         chunk_df.iloc[:, mapping["first_name"]].astype(str).str.slice(0, 200)
     )
@@ -411,6 +484,7 @@ def _copy_customers_chunk(
             "customers_file_mapping": actual_column_mapping,
             "customers_index_mapping": mapping,
             "uploaded_at": upload_created_at,
+            "upload_job_id": upload_job_id,
         }
     )
 
@@ -468,7 +542,8 @@ def _json_for_copy(d: dict) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@shared_task(bind=True, name="core.tasks.uploads.process_products_upload")
+@shared_task(bind=True, name="core.tasks.uploads.process_products_upload", reject_on_worker_lost=True)
+@_single_upload_worker
 def process_products_upload(self, job_id: str):
     job = _claim_job(job_id, UploadJob.UploadType.PRODUCTS, self.request.id)
     if job is None:
@@ -533,7 +608,7 @@ def process_products_upload(self, job_id: str):
 
         final_status = (
             UploadJob.Status.SUCCESS
-            if total_processed == job.total_rows
+            if total_saved == job.total_rows
             else UploadJob.Status.PARTIAL
         )
         _allocate_flush_and_finalize(
@@ -541,9 +616,9 @@ def process_products_upload(self, job_id: str):
             "flush_products_upload_job",
             final_status,
             "{rows_saved} رکورد محصولات با موفقیت در دیتابیس ذخیره شد.",
+            expected_rows=total_saved,
         )
         succeeded = True
-        schedule_analytics_refresh(tenant.id)
 
     except Exception as e:
         _mark_failed(
@@ -563,9 +638,7 @@ def _copy_products_chunk(
     upload_created_at,
 ):
     df = pd.DataFrame()
-    df["internal_product_id"] = chunk_df.iloc[:, mapping["internal_product_id"]].astype(
-        str
-    )
+    df["internal_product_id"] = chunk_df.iloc[:, mapping["internal_product_id"]].astype("string").fillna("")
     df["product_name"] = (
         chunk_df.iloc[:, mapping["product_name"]].astype(str).str.slice(0, 255)
     )
@@ -607,6 +680,7 @@ def _copy_products_chunk(
             "products_file_mapping": actual_column_mapping,
             "products_index_mapping": mapping,
             "uploaded_at": upload_created_at,
+            "upload_job_id": upload_job_id,
         }
     )
 
@@ -643,6 +717,64 @@ def _copy_products_chunk(
     )
 
     return len(df), rows_processed
+
+
+@shared_task(
+    name="core.tasks.uploads.process_ready_manual_upload",
+    soft_time_limit=POST_UPLOAD_SOFT_LIMIT,
+    time_limit=POST_UPLOAD_SOFT_LIMIT + 60,
+)
+def process_ready_manual_upload(pair_id, tenant_id):
+    try:
+        run_post_upload_sql(pair_id, tenant_id, _statement_timeout_ms())
+    except OperationalError as exc:
+        if getattr(exc.__cause__, "sqlstate", None) == "55P03":
+            return
+        raise
+    with transaction.atomic():
+        pair = ManualUploadPair.objects.select_for_update(skip_locked=True).filter(
+            pk=pair_id, tenant_id=tenant_id, status=ManualUploadPair.Status.COMPLETE,
+            cache_queued_at__isnull=True,
+        ).first()
+        if pair and schedule_analytics_refresh(tenant_id):
+            pair.cache_queued_at = timezone.now()
+            pair.save(update_fields=["cache_queued_at"])
+
+
+@shared_task(name="core.tasks.uploads.expire_manual_upload")
+def expire_manual_upload(pair_id, tenant_id):
+    expire_product_upload(pair_id, tenant_id)
+
+
+@shared_task(name="core.tasks.uploads.schedule_pending_manual_uploads")
+def schedule_pending_manual_uploads():
+    ready_pairs = ManualUploadPair.objects.filter(
+        Q(status=ManualUploadPair.Status.READY)
+        | Q(status=ManualUploadPair.Status.COMPLETE, cache_queued_at__isnull=True),
+    ).values_list("pk", "tenant_id")
+    for pair_id, tenant_id in ready_pairs.iterator():
+        process_ready_manual_upload.delay(pair_id, tenant_id)
+
+    expired_pairs = ManualUploadPair.objects.filter(
+        status=ManualUploadPair.Status.AWAITING_CUSTOMERS,
+        customers_due_at__lte=timezone.now(),
+    ).values_list("pk", "tenant_id")
+    for pair_id, tenant_id in expired_pairs.iterator():
+        expire_manual_upload.delay(pair_id, tenant_id)
+
+    # Recover jobs if the broker was unavailable immediately after admission.
+    stale_queued = UploadJob.objects.filter(
+        status=UploadJob.Status.QUEUED,
+        created_at__lte=timezone.now() - timedelta(minutes=2),
+    )
+    for job_id in stale_queued.filter(
+        manual_products_pair__status=ManualUploadPair.Status.PRODUCTS_PROCESSING,
+    ).values_list("pk", flat=True).iterator():
+        process_products_upload.delay(str(job_id))
+    for job_id in stale_queued.filter(
+        manual_customers_pair__status=ManualUploadPair.Status.CUSTOMERS_PROCESSING,
+    ).values_list("pk", flat=True).iterator():
+        process_customers_upload.delay(str(job_id))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

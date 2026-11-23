@@ -116,6 +116,25 @@ services:
     networks:
       - retano_internal
 
+  upload-scheduler:
+    image: ${IMAGE_NAME:-retano}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.production
+      RETANO_MANUAL_UPLOAD_SCHEDULER: "1"
+    command: ["celery", "-A", "Retano", "beat", "--loglevel=info"]
+    healthcheck:
+      disable: true
+    depends_on:
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    networks:
+      - retano_internal
+
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped

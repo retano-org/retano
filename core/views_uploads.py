@@ -41,6 +41,7 @@ from core.schema import (
     UPLOAD_JOB_STATUS_SCHEMA,
 )
 from core.serializers_uploads import UploadHistorySerializer
+from core.services.manual_uploads import ManualUploadConflict, queue_manual_upload
 from core.services.storage import upload_fileobj_to_storage
 from core.tasks.uploads import (
     process_coupons_upload,
@@ -129,6 +130,23 @@ def _accepted_response(job: UploadJob):
     )
 
 
+def _queue_paired_upload(request, upload_type, uploaded_file, mapping, task):
+    try:
+        job = queue_manual_upload(_tenant(request), upload_type, uploaded_file, mapping, task)
+    except ManualUploadConflict as exc:
+        return Response(
+            {
+                "status": "error",
+                "error_type": exc.code,
+                "message": str(exc),
+                "rows_processed": 0,
+                "rows_saved": 0,
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
+    return _accepted_response(job)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Customers upload
 # ─────────────────────────────────────────────────────────────────────────────
@@ -184,19 +202,10 @@ class CustomerUploadView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        tenant = _tenant(request)
-        storage_key = upload_fileobj_to_storage(
-            uploaded_file, tenant.id, "customers", uploaded_file.name
+        return _queue_paired_upload(
+            request, UploadJob.UploadType.CUSTOMERS, uploaded_file, mapping,
+            process_customers_upload,
         )
-        job = UploadJob.objects.create(
-            tenant=tenant,
-            upload_type=UploadJob.UploadType.CUSTOMERS,
-            storage_key=storage_key,
-            original_filename=uploaded_file.name,
-            mapping=mapping,
-        )
-        process_customers_upload.delay(str(job.id))
-        return _accepted_response(job)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -248,19 +257,10 @@ class ProductUploadView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        tenant = _tenant(request)
-        storage_key = upload_fileobj_to_storage(
-            uploaded_file, tenant.id, "products", uploaded_file.name
+        return _queue_paired_upload(
+            request, UploadJob.UploadType.PRODUCTS, uploaded_file, mapping,
+            process_products_upload,
         )
-        job = UploadJob.objects.create(
-            tenant=tenant,
-            upload_type=UploadJob.UploadType.PRODUCTS,
-            storage_key=storage_key,
-            original_filename=uploaded_file.name,
-            mapping=mapping,
-        )
-        process_products_upload.delay(str(job.id))
-        return _accepted_response(job)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -373,7 +373,16 @@ class UploadJobStatusView(APIView):
                 {"status": "error", "message": "Job not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        return Response(job.to_status_dict(), status=status.HTTP_200_OK)
+        data = job.to_status_dict()
+        pair = (
+            getattr(job, "manual_products_pair", None)
+            if job.upload_type == UploadJob.UploadType.PRODUCTS
+            else getattr(job, "manual_customers_pair", None)
+        )
+        if pair is not None:
+            data["pair_status"] = pair.status
+            data["customers_due_at"] = pair.customers_due_at
+        return Response(data, status=status.HTTP_200_OK)
 
 
 @UPLOAD_HISTORY_SCHEMA

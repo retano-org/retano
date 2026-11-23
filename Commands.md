@@ -3,6 +3,24 @@ c:\Projects\retanobi\myvenv\Scripts\activate.bat
 git merge -X theirs develop
 
 python manage.py spectacular --file schema.yaml --validate
+
+## Manual Excel upload pairing (0057)
+
+Use the updated `docker-compose.yml` on the VPS so deployment starts the
+`upload-scheduler` service. Let in-flight manual customer and product jobs finish
+before rollout. Apply Django migration 0057 before starting the new web and worker
+containers. It installs the manual replacement function and the sent-message
+archive trigger on the Supabase PostgreSQL connection used by Django.
+
+The scheduler checks for expired product uploads and failed task dispatches
+every minute. The 10 analytics and campaign functions run only for a completed
+manual pair. The Django database connection used by the upload workers needs a
+direct PostgreSQL connection or session pooling for their per-job advisory locks.
+
+The job status endpoint exposes `pair_status` and `customers_due_at` for paired
+uploads. A customer upload requires an open product window. Both manual endpoints
+return HTTP 409 if the tenant already has an active upload.
+
 ## Durable global-ID upload migration (0055)
 
 This deployment changes large staging/permanent ID columns to `bigint`, adds

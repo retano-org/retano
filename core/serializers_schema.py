@@ -363,7 +363,10 @@ class UploadErrorResponseSerializer(serializers.Serializer):
 
     status = serializers.ChoiceField(choices=["error"])
     error_type = serializers.ChoiceField(
-        choices=["file_error", "mapping_error", "duplicate_coupon_error"]
+        choices=[
+            "file_error", "mapping_error", "duplicate_coupon_error",
+            "upload_in_progress", "product_upload_required",
+        ]
     )
     message = serializers.CharField(help_text="Persian, user-facing error message.")
     rows_processed = serializers.IntegerField(default=0)
@@ -406,6 +409,8 @@ class UploadJobStatusResponseSerializer(serializers.Serializer):
     )
     created_at = serializers.DateTimeField()
     updated_at = serializers.DateTimeField()
+    pair_status = serializers.CharField(required=False)
+    customers_due_at = serializers.DateTimeField(required=False, allow_null=True)
 
 
 class UploadHistoryItemResponseSerializer(UploadJobStatusResponseSerializer):

@@ -97,6 +97,10 @@ jobs:
 
             IMAGE="ghcr.io/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag }}"
             cd /opt/retano
+            if ! docker compose config --services | grep -Fxq upload-scheduler; then
+              echo "Update the VPS compose file to include the upload-scheduler service."
+              exit 1
+            fi
 
             echo "=== Logging in to ghcr.io ==="
             echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
@@ -114,8 +118,8 @@ jobs:
             echo "=== Migrations OK. Updating IMAGE_TAG and redeploying ==="
             sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=${{ needs.build-and-push.outputs.image_tag }}|" .env
 
-            docker compose pull web worker
-            docker compose up -d --no-deps --wait web worker nginx
+            docker compose pull web worker upload-scheduler
+            docker compose up -d --no-deps --wait web worker upload-scheduler nginx
 
             echo "=== Health check ==="
             sleep 5

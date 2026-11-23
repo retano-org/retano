@@ -122,6 +122,52 @@ class UploadJob(models.Model):
         }
 
 
+class ManualUploadPair(models.Model):
+    class Status(models.TextChoices):
+        PRODUCTS_PROCESSING = "products_processing", "Products processing"
+        AWAITING_CUSTOMERS = "awaiting_customers", "Awaiting customers"
+        CUSTOMERS_PROCESSING = "customers_processing", "Customers processing"
+        READY = "ready", "Ready for post-upload SQL"
+        COMPLETE = "complete", "Complete"
+        EXPIRED = "expired", "Expired"
+        FAILED = "failed", "Failed"
+        SUPERSEDED = "superseded", "Superseded"
+
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
+    products_job = models.OneToOneField(
+        UploadJob, on_delete=models.RESTRICT, related_name="manual_products_pair"
+    )
+    customers_job = models.OneToOneField(
+        UploadJob, on_delete=models.RESTRICT, related_name="manual_customers_pair",
+        null=True, blank=True,
+    )
+    status = models.CharField(max_length=20, choices=Status.choices)
+    customers_due_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    cache_queued_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["status", "customers_due_at"], name="manual_pair_due_idx")]
+
+
+class SentCampaignMessage(models.Model):
+    trigger_result_id = models.BigIntegerField()
+    tenant_id = models.IntegerField()
+    user_id = models.TextField()
+    rule_id = models.BigIntegerField(db_index=True)
+    sent_at = models.DateTimeField()
+    sms_message_id = models.TextField(null=True)
+    delivered_at = models.DateTimeField(null=True)
+    snapshot = models.JSONField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["trigger_result_id", "sent_at"], name="unique_archived_campaign_send"
+            )
+        ]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Coupon
 # ─────────────────────────────────────────────────────────────────────────────

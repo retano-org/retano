@@ -392,6 +392,14 @@ from config.settings.campaign_sms_beat import (  # noqa: E402
     CAMPAIGN_SMS_BEAT_SCHEDULE,
 )
 
-CELERY_BEAT_SCHEDULE = dict(CAMPAIGN_SMS_BEAT_SCHEDULE)
+if os.environ.get("RETANO_MANUAL_UPLOAD_SCHEDULER") == "1":
+    CELERY_BEAT_SCHEDULE = {
+        "check-pending-manual-uploads": {
+            "task": "core.tasks.uploads.schedule_pending_manual_uploads",
+            "schedule": 60.0,
+        },
+    }
+else:
+    CELERY_BEAT_SCHEDULE = dict(CAMPAIGN_SMS_BEAT_SCHEDULE)
 
 CELERY_TASK_ROUTES["core.tasks.campaign_sms.*"] = {"queue": "campaign_sms"}

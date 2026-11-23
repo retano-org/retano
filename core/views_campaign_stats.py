@@ -5,7 +5,6 @@ Campaign detail stats endpoint (صفحه جزئیات کمپین / گزارش ک
 """
 
 from django.db import connection
-from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status
 from rest_framework.response import Response
@@ -14,8 +13,6 @@ from rest_framework.views import APIView
 from core.models import Campaign
 from core.models_supabase import TriggerResult
 from core.schema import CAMPAIGN_DETAIL_STATS_SCHEMA   
-from core.models import Campaign
-from core.models_supabase import TriggerResult
 
 # How many whole calendar days approximate the "exactly 72 complete hours"
 # window, per the product decision to approximate using orders.order_date
@@ -40,14 +37,7 @@ class CampaignDetailStatsView(APIView):
 
         targeted_users = trigger_qs.count()
 
-        sms_counts = trigger_qs.aggregate(
-            sent=Count("id", filter=Q(sent_at__isnull=False)),
-            delivered=Count("id", filter=Q(delivered_at__isnull=False)),
-        )
-        sms_sent = sms_counts["sent"] or 0
-        sms_delivered = sms_counts["delivered"] or 0
-
-        customer_count, order_count, sales_amount = _compute_conversion_metrics(
+        sms_sent, sms_delivered, customer_count, order_count, sales_amount = _campaign_results(
             campaign.id
         )
 
@@ -76,24 +66,35 @@ class CampaignDetailStatsView(APIView):
         )
 
 
-_CONVERSION_METRICS_QUERY = """
+_CAMPAIGN_RESULTS_QUERY = """
+    WITH sends AS (
+        SELECT user_id, sent_at, delivered_at FROM trigger_results
+        WHERE rule_id = %s AND sent_at IS NOT NULL
+        UNION ALL
+        SELECT user_id, sent_at, delivered_at FROM core_sentcampaignmessage
+        WHERE rule_id = %s
+    ),
+    matched_orders AS (
+        SELECT DISTINCT o.order_id, o.user_id, o.total_amount
+        FROM sends s
+        JOIN orders o
+            ON o.user_id = s.user_id
+            AND o.order_date >= s.sent_at::date
+            AND o.order_date <= s.sent_at::date + %s
+    )
     SELECT
-        COUNT(DISTINCT tr.user_id)      AS customer_count,
-        COUNT(o.order_id)               AS order_count,
-        COALESCE(SUM(o.total_amount), 0) AS sales_amount
-    FROM trigger_results tr
-    JOIN orders o
-        ON  o.user_id = tr.user_id
-        AND o.order_date >= tr.sent_at::date
-        AND o.order_date <= tr.sent_at::date + %s
-    WHERE tr.rule_id = %s
-      AND tr.sent_at IS NOT NULL
+        (SELECT COUNT(*) FROM sends),
+        (SELECT COUNT(delivered_at) FROM sends),
+        COUNT(DISTINCT user_id)      AS customer_count,
+        COUNT(order_id)             AS order_count,
+        COALESCE(SUM(total_amount), 0) AS sales_amount
+    FROM matched_orders
 """
 
 
-def _compute_conversion_metrics(campaign_id: int) -> tuple[int, int, float]:
+def _campaign_results(campaign_id: int) -> tuple[int, int, int, int, float]:
     """
-    Returns (customer_count, order_count, sales_amount) for this campaign's
+    Returns send counts and (customer_count, order_count, sales_amount) for this campaign's
     targeted users, each evaluated against that specific user's OWN send
     window [DATE(sent_at), DATE(sent_at) + SALES_WINDOW_DAYS].
 
@@ -116,10 +117,12 @@ def _compute_conversion_metrics(campaign_id: int) -> tuple[int, int, float]:
     risk from joining on user_id alone here.
     """
     with connection.cursor() as cursor:
-        cursor.execute(_CONVERSION_METRICS_QUERY, [SALES_WINDOW_DAYS, campaign_id])
-        customer_count, order_count, sales_amount = cursor.fetchone()
+        cursor.execute(_CAMPAIGN_RESULTS_QUERY, [campaign_id, campaign_id, SALES_WINDOW_DAYS])
+        sent, delivered, customer_count, order_count, sales_amount = cursor.fetchone()
 
     return (
+        int(sent),
+        int(delivered),
         int(customer_count or 0),
         int(order_count or 0),
         round(float(sales_amount or 0), 2),

@@ -296,6 +296,7 @@ _UPLOAD_COMMON_RESPONSES_BASE = {
     400: UploadErrorResponseSerializer,
     401: ErrorResponseSerializer,
 }
+_PAIRED_UPLOAD_RESPONSES = {**_UPLOAD_COMMON_RESPONSES_BASE, 409: UploadErrorResponseSerializer}
 
 CUSTOMER_UPLOAD_SCHEMA = extend_schema(
     tags=["Uploads"],
@@ -308,7 +309,8 @@ CUSTOMER_UPLOAD_SCHEMA = extend_schema(
         "customers_first_name=1 means column B holds first names.\n\n"
         "Returns 202 immediately with a job_id; the actual import runs "
         "asynchronously on a Celery worker. Poll "
-        "GET /api/v1/uploads/jobs/{job_id}/ for progress."
+        "GET /api/v1/uploads/jobs/{job_id}/ for progress. Submit the customer "
+        "file within 60 minutes after the paired product import succeeds."
     ),
     request={
         "multipart/form-data": {
@@ -387,7 +389,7 @@ CUSTOMER_UPLOAD_SCHEMA = extend_schema(
             ],
         },
     },
-    responses=_UPLOAD_COMMON_RESPONSES_BASE,
+    responses=_PAIRED_UPLOAD_RESPONSES,
 )
 """Applied directly above CustomerUploadView in core/views_uploads.py."""
 
@@ -403,7 +405,8 @@ PRODUCT_UPLOAD_SCHEMA = extend_schema(
         "normalization; an empty cell in either column is stored as NULL, "
         "never as an empty string.\n\n"
         "Returns 202 immediately with a job_id; poll "
-        "GET /api/v1/uploads/jobs/{job_id}/ for progress."
+        "GET /api/v1/uploads/jobs/{job_id}/ for progress. A successful "
+        "product import opens the customer upload window for 60 minutes."
     ),
     request={
         "multipart/form-data": {
@@ -467,7 +470,7 @@ PRODUCT_UPLOAD_SCHEMA = extend_schema(
             ],
         },
     },
-    responses=_UPLOAD_COMMON_RESPONSES_BASE,
+    responses=_PAIRED_UPLOAD_RESPONSES,
 )
 """Applied directly above ProductUploadView in core/views_uploads.py."""
 

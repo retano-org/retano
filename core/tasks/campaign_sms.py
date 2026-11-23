@@ -32,11 +32,13 @@ Neither task touches fill_final_messages() or process_campaign_send_dates()
 
 import logging
 from datetime import timedelta
+from itertools import chain
 
 from celery import shared_task
 from django.db import connection
 from django.utils import timezone
 
+from core.models import SentCampaignMessage
 from core.models_supabase import TriggerResult
 from core.services.sms_campaign_client import (
     CampaignSmsError,
@@ -175,13 +177,18 @@ def check_campaign_sms_delivery(self):
         delivered_at__isnull=True,
         sms_message_id__isnull=False,
     ).exclude(sms_message_id="")
+    archived_qs = SentCampaignMessage.objects.filter(
+        sent_at__gte=cutoff,
+        delivered_at__isnull=True,
+        sms_message_id__isnull=False,
+    ).exclude(sms_message_id="")
 
     client = get_default_campaign_client()
 
     total_checked = 0
     total_delivered = 0
 
-    for row in pending_qs.iterator():
+    for row in chain(pending_qs.iterator(), archived_qs.iterator()):
         total_checked += 1
         try:
             report = client.report_message(row.sms_message_id)
@@ -195,10 +202,23 @@ def check_campaign_sms_delivery(self):
             continue
 
         if report.delivered:
-            TriggerResult.objects.filter(
-                pk=row.pk, delivered_at__isnull=True
-            ).update(delivered_at=timezone.now())
-            total_delivered += 1
+            now = timezone.now()
+            if isinstance(row, SentCampaignMessage):
+                trigger_result_id = row.trigger_result_id
+            else:
+                trigger_result_id = row.pk
+                updated = TriggerResult.objects.filter(
+                    pk=row.pk, sent_at=row.sent_at, sms_message_id=row.sms_message_id,
+                    delivered_at__isnull=True,
+                ).update(delivered_at=now)
+                if updated:
+                    total_delivered += updated
+                    continue
+            # An eligibility run may have moved the send since the lookup began.
+            total_delivered += SentCampaignMessage.objects.filter(
+                trigger_result_id=trigger_result_id, sent_at=row.sent_at,
+                delivered_at__isnull=True,
+            ).update(delivered_at=now)
 
     logger.info(
         "check_campaign_sms_delivery: checked=%s newly_delivered=%s",
