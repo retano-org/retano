@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from .models import Campaign
+from .models import Campaign, InstantCampaign
 
 
 class DecimalChoiceField(serializers.ChoiceField):
@@ -109,3 +109,33 @@ class CampaignToggleSerializer(serializers.ModelSerializer):
         model = Campaign
         fields = ["id", "is_active"]
         read_only_fields = ["id"]
+
+
+class InstantCampaignSerializer(serializers.ModelSerializer):
+    coupon_discount_percentage = DecimalChoiceField(
+        choices=InstantCampaign.COUPON_DISCOUNT_PERCENTAGE_CHOICES,
+        allow_null=True,
+        required=False,
+    )
+
+    class Meta:
+        model = InstantCampaign
+        fields = [
+            "id", "tenant", "rule_number", "name", "coupon_discount_percentage",
+            "priority", "buying_power", "customer_type", "gender",
+            "first_product_attribute", "second_product_attribute", "description",
+            "is_active", "message_pattern", "created_at",
+        ]
+        read_only_fields = ["id", "tenant", "rule_number", "created_at"]
+
+
+class InstantCampaignListSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = InstantCampaign
+        fields = ["id", "rule_number", "name", "description", "is_active", "priority", "created_at"]
+        read_only_fields = fields
+
+
+class InstantCampaignToggleSerializer(CampaignToggleSerializer):
+    class Meta(CampaignToggleSerializer.Meta):
+        model = InstantCampaign

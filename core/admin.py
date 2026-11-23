@@ -6,6 +6,7 @@ from .models import (
     CouponFileUpload,
     CustomerFileUpload,
     ErrorLog,
+    InstantCampaign,
     ProductFileUpload,
     ProductsUnNormalizedDataStaging,
     Tenant,
@@ -15,6 +16,7 @@ from .models import (
 # Register your models here.
 
 admin.site.register(Campaign)
+admin.site.register(InstantCampaign)
 admin.site.register(Tenant)
 admin.site.register(CustomerFileUpload)
 admin.site.register(ProductFileUpload)

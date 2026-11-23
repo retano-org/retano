@@ -3,9 +3,10 @@
 import hashlib
 import secrets
 import uuid
+from zoneinfo import ZoneInfo
 
 from django.conf import settings
-from django.db import models
+from django.db import models, router, transaction
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.utils import timezone
@@ -154,7 +155,8 @@ class SentCampaignMessage(models.Model):
     trigger_result_id = models.BigIntegerField()
     tenant_id = models.IntegerField()
     user_id = models.TextField()
-    rule_id = models.BigIntegerField(db_index=True)
+    rule_id = models.BigIntegerField(null=True, db_index=True)
+    instant_campaign_id = models.BigIntegerField(null=True)
     sent_at = models.DateTimeField()
     sms_message_id = models.TextField(null=True)
     delivered_at = models.DateTimeField(null=True)
@@ -262,28 +264,9 @@ class CouponFileUpload(models.Model):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class Campaign(models.Model):
+class CampaignBase(models.Model):
 
     COUPON_DISCOUNT_PERCENTAGE_CHOICES = [(i, f"{i}%") for i in range(0, 101)]
-
-    ACTIVATION_BASE_CHOICES = [
-        ("همیشه", "همیشه"),
-        ("آخرین خرید", "آخرین خرید"),
-        ("اولین خرید", "اولین خرید"),
-        ("یادآوری خرید بعدی", "یادآوری خرید بعدی"),
-        ("قدرت خرید", "قدرت خرید"),
-    ]
-
-    COMPARISON_TYPE_CHOICES = [
-        ("بزرگتر از", "بزرگتر از"),
-        ("کوچکتر از", "کوچکتر از"),
-        ("برابر با", "برابر با"),
-    ]
-
-    VALUE_UNIT_CHOICES = [
-        ("روز", "روز"),
-        ("تومان", "تومان"),
-    ]
 
     GENDER_CHOICES = [
         ("آقایان", "آقایان"),
@@ -329,32 +312,6 @@ class Campaign(models.Model):
         blank=True,
     )
 
-    campaign_start_date = models.DateField(null=True, blank=True)
-    campaign_end_date = models.DateField(null=True, blank=True)
-    send_sms_time = models.TimeField(default="11:00:00")
-
-    activation_base = models.CharField(
-        blank=True,
-        null=True,
-        max_length=50,
-        choices=ACTIVATION_BASE_CHOICES,
-        default="همیشه",
-    )
-    comparison_type = models.CharField(
-        null=True,
-        blank=True,
-        max_length=50,
-        choices=COMPARISON_TYPE_CHOICES,
-        default="بزرگتر از",
-    )
-    comparison_value = models.IntegerField(null=True, blank=True, default=1)
-    value_unit = models.CharField(
-        null=True,
-        blank=True,
-        max_length=50,
-        choices=VALUE_UNIT_CHOICES,
-        default="روز",
-    )
     priority = models.CharField(
         max_length=20,
         choices=PRIORITIES_CHOICES,
@@ -395,9 +352,55 @@ class Campaign(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        abstract = True
         indexes = [
             models.Index(fields=["tenant_id"]),
         ]
+
+
+class Campaign(CampaignBase):
+    ACTIVATION_BASE_CHOICES = [
+        ("همیشه", "همیشه"),
+        ("آخرین خرید", "آخرین خرید"),
+        ("اولین خرید", "اولین خرید"),
+        ("یادآوری خرید بعدی", "یادآوری خرید بعدی"),
+        ("قدرت خرید", "قدرت خرید"),
+    ]
+    COMPARISON_TYPE_CHOICES = [
+        ("بزرگتر از", "بزرگتر از"),
+        ("کوچکتر از", "کوچکتر از"),
+        ("برابر با", "برابر با"),
+    ]
+    VALUE_UNIT_CHOICES = [
+        ("روز", "روز"),
+        ("تومان", "تومان"),
+    ]
+
+    campaign_start_date = models.DateField(null=True, blank=True)
+    campaign_end_date = models.DateField(null=True, blank=True)
+    send_sms_time = models.TimeField(default="11:00:00")
+    activation_base = models.CharField(
+        blank=True,
+        null=True,
+        max_length=50,
+        choices=ACTIVATION_BASE_CHOICES,
+        default="همیشه",
+    )
+    comparison_type = models.CharField(
+        null=True,
+        blank=True,
+        max_length=50,
+        choices=COMPARISON_TYPE_CHOICES,
+        default="بزرگتر از",
+    )
+    comparison_value = models.IntegerField(null=True, blank=True, default=1)
+    value_unit = models.CharField(
+        null=True,
+        blank=True,
+        max_length=50,
+        choices=VALUE_UNIT_CHOICES,
+        default="روز",
+    )
 
     def save(self, *args, **kwargs):
         if not self.pk:
@@ -411,6 +414,46 @@ class Campaign(models.Model):
 
     def __str__(self):
         return f"Campaign {self.rule_number} | Tenant {self.tenant_id}"
+
+
+class InstantCampaign(CampaignBase):
+    @property
+    def send_sms_time(self):
+        if self.created_at is not None:
+            return timezone.localtime(self.created_at, ZoneInfo("Asia/Tehran")).time()
+        return None
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            return super().save(*args, **kwargs)
+
+        using = kwargs.get("using") or router.db_for_write(type(self), instance=self)
+        with transaction.atomic(using=using):
+            Tenant.objects.using(using).select_for_update(no_key=True).only("id").get(pk=self.tenant_id)
+            last_rule_number = (
+                type(self).objects.using(using).filter(tenant_id=self.tenant_id)
+                .order_by("-rule_number").values_list("rule_number", flat=True).first()
+            )
+            self.rule_number = last_rule_number + 1 if last_rule_number is not None else 1
+            return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Instant campaign {self.rule_number} | Tenant {self.tenant_id}"
+
+
+class InstantCampaignPreparation(models.Model):
+    campaign = models.OneToOneField(InstantCampaign, on_delete=models.CASCADE, primary_key=True)
+    completed_at = models.DateTimeField(null=True, db_index=True)
+
+
+@receiver(post_save, sender=InstantCampaign)
+def enqueue_instant_campaign(sender, instance, created, raw, using, **kwargs):
+    if created and not raw:
+        from core.tasks.instant_campaigns import prepare_instant_campaign
+
+        transaction.on_commit(
+            lambda: prepare_instant_campaign.delay(instance.pk), using=using, robust=True,
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

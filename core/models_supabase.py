@@ -32,7 +32,7 @@ since managed=False also skips constraint creation.
 
 from django.db import models
 
-from core.models import Campaign, Tenant
+from core.models import Campaign, InstantCampaign, Tenant
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -180,6 +180,13 @@ class TriggerResult(models.Model):
         db_column="rule_id",
         on_delete=models.DO_NOTHING,
         related_name="trigger_results",
+        null=True,
+    )
+    instant_campaign = models.ForeignKey(
+        InstantCampaign,
+        on_delete=models.DO_NOTHING,
+        related_name="trigger_results",
+        null=True,
     )
     rule_priority = models.CharField(max_length=50, null=True, blank=True)
     detected_at = models.DateTimeField(null=True, blank=True)

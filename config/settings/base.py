@@ -398,6 +398,10 @@ if os.environ.get("RETANO_MANUAL_UPLOAD_SCHEDULER") == "1":
             "task": "core.tasks.uploads.schedule_pending_manual_uploads",
             "schedule": 60.0,
         },
+        "check-pending-instant-campaigns": {
+            "task": "core.tasks.instant_campaigns.schedule_pending_instant_campaigns",
+            "schedule": 60.0,
+        },
     }
 else:
     CELERY_BEAT_SCHEDULE = dict(CAMPAIGN_SMS_BEAT_SCHEDULE)

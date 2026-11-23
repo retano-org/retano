@@ -1,6 +1,7 @@
 # core/views.py
 
 from django_filters.rest_framework import DjangoFilterBackend
+from drf_spectacular.utils import extend_schema
 
 from rest_framework import filters, permissions, status, viewsets
 from rest_framework.decorators import action
@@ -9,6 +10,7 @@ from rest_framework.views import APIView
 from core.schema import CAMPAIGN_VIEWSET_SCHEMA, CAMPAIGN_TOGGLE_SCHEMA, CAMPAIGN_META_SCHEMA
 from .models import (
     Campaign,
+    InstantCampaign,
 )
 
 
@@ -16,6 +18,9 @@ from .serializers import (
     CampaignListSerializer,
     CampaignSerializer,
     CampaignToggleSerializer,
+    InstantCampaignListSerializer,
+    InstantCampaignSerializer,
+    InstantCampaignToggleSerializer,
 )
 
 
@@ -28,8 +33,7 @@ from .serializers import (
 
 
 
-@CAMPAIGN_VIEWSET_SCHEMA
-class CampaignViewSet(viewsets.ModelViewSet):
+class CampaignViewSetBase(viewsets.ModelViewSet):
     """
     /api/v1/campaigns/                 — list, create
     /api/v1/campaigns/{id}/            — retrieve, update, partial_update, destroy
@@ -56,15 +60,15 @@ class CampaignViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
-            return Campaign.objects.none()
-        return Campaign.objects.filter(tenant__owner=self.request.user)
+            return self.campaign_model.objects.none()
+        return self.campaign_model.objects.filter(tenant__owner=self.request.user)
 
     def get_serializer_class(self):
         if self.action == "list":
-            return CampaignListSerializer
+            return self.list_serializer_class
         if self.action == "toggle":
-            return CampaignToggleSerializer
-        return CampaignSerializer
+            return self.toggle_serializer_class
+        return self.serializer_class
 
     def perform_create(self, serializer):
         # tenant is never trusted from the client — derived from the
@@ -95,6 +99,22 @@ class CampaignViewSet(viewsets.ModelViewSet):
             serializer = self.get_serializer(campaign)
 
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@CAMPAIGN_VIEWSET_SCHEMA
+class CampaignViewSet(CampaignViewSetBase):
+    campaign_model = Campaign
+    serializer_class = CampaignSerializer
+    list_serializer_class = CampaignListSerializer
+    toggle_serializer_class = CampaignToggleSerializer
+
+
+@extend_schema(tags=["Instant campaigns"])
+class InstantCampaignViewSet(CampaignViewSetBase):
+    campaign_model = InstantCampaign
+    serializer_class = InstantCampaignSerializer
+    list_serializer_class = InstantCampaignListSerializer
+    toggle_serializer_class = InstantCampaignToggleSerializer
 
 
 

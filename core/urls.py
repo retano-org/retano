@@ -4,7 +4,7 @@ from django.urls import include, path
 
 from rest_framework.routers import DefaultRouter
 
-from .views import CampaignMetaView, CampaignViewSet
+from .views import CampaignMetaView, CampaignViewSet, InstantCampaignViewSet
 
 from core.views_reports import (
     SegmentsReportView,
@@ -45,6 +45,7 @@ from core.views_sync import (
 
 router = DefaultRouter()
 router.register(r"campaigns", CampaignViewSet, basename="campaign")
+router.register(r"instant-campaigns", InstantCampaignViewSet, basename="instant-campaign")
 
 urlpatterns = [
     # ── Campaign meta (Phase 4) ───────────────────────────────────────────
